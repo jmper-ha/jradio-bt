@@ -1,0 +1,8 @@
+build/
+build-host/
+sdkconfig
+sdkconfig.old
+.pytest_cache/
+managed_components/
+*.log
+.worktrees/
