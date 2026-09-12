@@ -1,0 +1,51 @@
+menu "jradio-bt"
+
+    config JBT_UART_NUM
+        int "UART port to the host"
+        default 1
+        range 1 2
+
+    config JBT_UART_TX_GPIO
+        int "UART TX GPIO (to the host's RX)"
+        default 17
+
+    config JBT_UART_RX_GPIO
+        int "UART RX GPIO (from the host's TX)"
+        default 16
+
+    config JBT_UART_BAUD
+        int "UART baud rate"
+        default 921600
+        help
+            The host runs the same figure. 921600 moves a 30 KB cover in a
+            third of a second and both chips clock it exactly.
+
+    config JBT_DEVICE_NAME
+        string "Bluetooth name until the host sets one"
+        default "jRadio"
+
+    config JBT_I2S_BCLK_GPIO
+        int "I2S BCLK GPIO"
+        default 26
+        help
+            The three I2S lines are shared with the host and the DAC: the
+            module drives them in sink mode and leaves them as inputs
+            otherwise. 33-47 ohm in series on each, at each end.
+
+    config JBT_I2S_LRCK_GPIO
+        int "I2S LRCK (WS) GPIO"
+        default 25
+
+    config JBT_I2S_DATA_GPIO
+        int "I2S DATA GPIO"
+        default 22
+
+    config JBT_LOG_MIRROR
+        bool "Mirror the log to the host as LOG frames"
+        default y
+        help
+            Every log line also goes to the host, which prints it under its
+            own log with a "bt:" prefix. This is how the module is debugged
+            once it sits inside the case with no USB reachable.
+
+endmenu

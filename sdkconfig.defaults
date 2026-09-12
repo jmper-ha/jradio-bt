@@ -1,0 +1,26 @@
+CONFIG_IDF_TARGET="esp32"
+
+# 4 MB module, one app, no OTA yet: the S3 is the device that gets updated in
+# the field, and this one is flashed over its own USB.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Bluetooth Classic only. BLE is off to keep the controller's RAM for A2DP,
+# and Wi-Fi never runs here: the two share one radio, and coexistence is
+# where A2DP dropouts come from.
+CONFIG_BT_ENABLED=y
+CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
+CONFIG_BT_BLUEDROID_ENABLED=y
+CONFIG_BT_CLASSIC_ENABLED=y
+CONFIG_BT_BLE_ENABLED=n
+CONFIG_BT_A2DP_ENABLE=y
+CONFIG_BT_SPP_ENABLED=n
+CONFIG_BT_HFP_ENABLE=n
+
+# The metadata settle timer and the position poll run on the esp_timer task
+# and send frames from there; 3.5 KB overflowed on the first track.
+CONFIG_ESP_TIMER_TASK_STACK_SIZE=6144
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
