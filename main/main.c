@@ -80,6 +80,7 @@ static void send_mode_ack(jbt_mode_t mode, jbt_result_t result)
  * it. The profile events give the semaphore; the worker takes it. */
 static SemaphoreHandle_t s_profile_event;
 static volatile bool s_profile_up;
+static volatile bool s_stack_up;
 static TaskHandle_t s_mode_worker;
 static volatile uint8_t s_mode_wanted;
 static SemaphoreHandle_t s_mode_request;
@@ -116,12 +117,15 @@ static jbt_result_t leave_mode(jbt_mode_t mode)
         }
         return JBT_RESULT_OK;
     case JBT_MODE_SOURCE:
+        /* The bus first, whatever the profile then does: a source that
+         * would not go down once left the I2S port held, and every sink
+         * after it failed to claim the bus until the module was rebooted. */
+        audio_in_close();
         (void)xSemaphoreTake(s_profile_event, 0);
         if (a2dp_source_stop() != ESP_OK || !wait_profile(false)) {
             ESP_LOGE(TAG, "the source would not go down");
             return JBT_RESULT_FAILED;
         }
-        audio_in_close();
         return JBT_RESULT_OK;
     default: return JBT_RESULT_OK;
     }
@@ -136,6 +140,9 @@ static jbt_result_t take_mode(jbt_mode_t mode)
             ESP_LOGE(TAG, "the sink would not come up");
             return JBT_RESULT_FAILED;
         }
+        /* The port is one: whatever the other role left on it goes first.
+         * A no-op when it was closed properly. */
+        audio_in_close();
         const esp_err_t err = audio_out_claim();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "cannot claim the bus: %s", esp_err_to_name(err));
@@ -159,6 +166,7 @@ static jbt_result_t take_mode(jbt_mode_t mode)
             ESP_LOGE(TAG, "the source would not come up");
             return JBT_RESULT_FAILED;
         }
+        audio_out_release();
         const esp_err_t err = audio_in_open();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "cannot listen on the bus: %s", esp_err_to_name(err));
@@ -302,8 +310,12 @@ static void handle_set_name(const jbt_frame_t *frame)
     }
     jbt_result_t result = JBT_RESULT_BAD_ARG;
     if (module_state_set_name(name)) {
-        result = bt_stack_set_name(name) == ESP_OK ? JBT_RESULT_OK : JBT_RESULT_FAILED;
-        ESP_LOGI(TAG, "name is now \"%s\"", name);
+        /* The host greets the moment the link answers, which is before the
+         * stack is up: the name is on the card and the stack takes it from
+         * there when it starts. Calling the stack meanwhile crashed it. */
+        result = JBT_RESULT_OK;
+        if (s_stack_up) result = bt_stack_set_name(name) == ESP_OK ? JBT_RESULT_OK : JBT_RESULT_FAILED;
+        ESP_LOGI(TAG, "name is now \"%s\"%s", name, s_stack_up ? "" : " (for the stack's start)");
     }
     if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, result);
 }
@@ -380,7 +392,6 @@ static void on_connection(jbt_conn_t state, const uint8_t *address)
     module_state_set_connection(state, state == JBT_CONN_NONE ? NULL : address,
                                 state == JBT_CONN_CONNECTED ? current.peer_name : NULL);
     if (state == JBT_CONN_NONE) module_state_set_play(JBT_PLAY_STOPPED);
-    if (state == JBT_CONN_CONNECTED) module_state_remember_peer(address);
     send_status();
     if (state == JBT_CONN_CONNECTED) send_event(JBT_EVENT_CONNECTED, NULL);
     if (state == JBT_CONN_NONE && current.status.connection == JBT_CONN_CONNECTED) {
@@ -500,6 +511,15 @@ static void on_scanning(bool scanning)
     send_status();
 }
 
+/* Who is remembered where: a phone is called back when the sink comes up,
+ * a speaker when the source does. The sink once called the speaker as if
+ * it were a phone, because both went into the same slot. */
+static void on_sink_connection(jbt_conn_t state, const uint8_t *address)
+{
+    if (state == JBT_CONN_CONNECTED) module_state_remember_peer(address);
+    on_connection(state, address);
+}
+
 static void on_source_connection(jbt_conn_t state, const uint8_t *address)
 {
     if (state == JBT_CONN_CONNECTED) module_state_remember_speaker(address);
@@ -507,7 +527,7 @@ static void on_source_connection(jbt_conn_t state, const uint8_t *address)
 }
 
 static const a2dp_sink_listener_t s_sink_listener = {
-    .connection = on_connection, .peer_name = on_peer_name, .audio_format = on_audio_format,
+    .connection = on_sink_connection, .peer_name = on_peer_name, .audio_format = on_audio_format,
     .play = on_play, .track = on_track, .position = on_position, .volume = on_volume,
     .cover = on_cover, .profile = on_profile,
 };
@@ -543,6 +563,11 @@ void app_main(void)
     module_state_t state;
     module_state_get(&state);
     ESP_ERROR_CHECK(bt_stack_start(state.name));
+    s_stack_up = true;
+    /* A name the host sent while the stack was starting is on the card but
+     * not in the stack: read it again now the stack can take it. */
+    module_state_get(&state);
+    (void)bt_stack_set_name(state.name);
     s_profile_event = xSemaphoreCreateBinary();
     s_mode_request = xSemaphoreCreateBinary();
     if (s_profile_event == NULL || s_mode_request == NULL) abort();
