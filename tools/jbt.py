@@ -30,7 +30,7 @@ MSG = {
     "GET_STATUS": 0x0A, "COVER_GET": 0x0B, "FORGET": 0x0C, "PING": 0x0D,
     "STATUS": 0x80, "MODE_ACK": 0x81, "TRACK": 0x82, "POSITION": 0x83, "PLAY_STATE": 0x84,
     "VOLUME": 0x85, "COVER_INFO": 0x86, "COVER_DATA": 0x87, "SCAN_RESULT": 0x88,
-    "EVENT": 0x89, "LOG": 0x8A, "PONG": 0x8B, "ACK": 0xFE,
+    "EVENT": 0x89, "LOG": 0x8A, "PONG": 0x8B, "KEY": 0x8C, "ACK": 0xFE,
 }
 NAME = {v: k for k, v in MSG.items()}
 FLAG_WANT_ACK, FLAG_IS_ACK = 0x01, 0x02
@@ -155,6 +155,8 @@ def describe(mtype: int, flags: int, seq: int, payload: bytes) -> str:
             return f"PLAY_STATE {PLAY[payload[0]]}"
         if mtype == MSG["VOLUME"]:
             return f"VOLUME {payload[0]}"
+        if mtype == MSG["KEY"]:
+            return f"KEY {['play', 'pause', 'stop', 'next', 'prev', 'ff', 'rew'][payload[0]]}"
         if mtype == MSG["COVER_INFO"]:
             size, kind, digest, w, h = struct.unpack("<IBIHH", payload)
             return f"COVER_INFO size={size} kind={kind} hash={digest:08x} {w}x{h}"
@@ -216,6 +218,11 @@ def main():
     sub.add_parser("mode").add_argument("mode", choices=MODE)
     sub.add_parser("volume").add_argument("level", type=int)
     sub.add_parser("key").add_argument("key", choices=["play", "pause", "stop", "next", "prev", "ff", "rew"])
+    sub.add_parser("scan").add_argument("state", choices=["on", "off"])
+    sub.add_parser("connect").add_argument("address", help="AA:BB:CC:DD:EE:FF")
+    sub.add_parser("disconnect")
+    sub.add_parser("forget")
+    f = sub.add_parser("format"); f.add_argument("rate", type=int); f.add_argument("channels", type=int, nargs="?", default=2)
     args = ap.parse_args()
 
     if args.cmd == "selftest":
@@ -239,6 +246,16 @@ def main():
     elif args.cmd == "key":
         keys = ["play", "pause", "stop", "next", "prev", "ff", "rew"]
         transact(ser, MSG["PASSTHROUGH"], bytes([keys.index(args.key)]), flags=FLAG_WANT_ACK, until=MSG["ACK"])
+    elif args.cmd == "scan":
+        transact(ser, MSG["SCAN"], bytes([1 if args.state == "on" else 0]), wait=12.0 if args.state == "on" else 1.0, flags=FLAG_WANT_ACK)
+    elif args.cmd == "connect":
+        transact(ser, MSG["CONNECT"], bytes.fromhex(args.address.replace(":", "")), wait=8.0, flags=FLAG_WANT_ACK)
+    elif args.cmd == "disconnect":
+        transact(ser, MSG["DISCONNECT"], flags=FLAG_WANT_ACK, until=MSG["ACK"])
+    elif args.cmd == "forget":
+        transact(ser, MSG["FORGET"], flags=FLAG_WANT_ACK, until=MSG["ACK"])
+    elif args.cmd == "format":
+        transact(ser, MSG["I2S_FORMAT"], struct.pack("<IBB", args.rate, 16, args.channels), flags=FLAG_WANT_ACK, until=MSG["ACK"])
     elif args.cmd == "monitor":
         decoder = Decoder()
         print("listening; Ctrl+C to stop")

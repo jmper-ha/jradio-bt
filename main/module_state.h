@@ -41,3 +41,7 @@ void module_state_set_codec(jbt_codec_t codec, uint32_t sample_rate);
 bool module_state_last_peer(uint8_t out[6]);
 void module_state_remember_peer(const uint8_t peer[6]);
 void module_state_forget_peer(void);
+/* The same for the speaker the module last sent to. */
+bool module_state_last_speaker(uint8_t out[6]);
+void module_state_remember_speaker(const uint8_t peer[6]);
+void module_state_forget_speaker(void);

@@ -10,6 +10,7 @@
 #define MODULE_NVS_NAMESPACE "jbt"
 #define MODULE_NVS_NAME_KEY "name"
 #define MODULE_NVS_PEER_KEY "peer"
+#define MODULE_NVS_SPEAKER_KEY "speaker"
 
 static module_state_t s_state;
 static SemaphoreHandle_t s_lock;
@@ -103,34 +104,41 @@ void module_state_set_codec(jbt_codec_t codec, uint32_t sample_rate)
     unlock();
 }
 
-bool module_state_last_peer(uint8_t out[6])
+static bool nvs_address_get(const char *key, uint8_t out[6])
 {
     nvs_handle_t nvs;
     if (nvs_open(MODULE_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return false;
     size_t length = 6U;
-    const bool found = nvs_get_blob(nvs, MODULE_NVS_PEER_KEY, out, &length) == ESP_OK && length == 6U;
+    const bool found = nvs_get_blob(nvs, key, out, &length) == ESP_OK && length == 6U;
     nvs_close(nvs);
     return found;
 }
 
-void module_state_remember_peer(const uint8_t peer[6])
+static void nvs_address_set(const char *key, const uint8_t peer[6])
 {
     uint8_t known[6];
-    if (module_state_last_peer(known) && memcmp(known, peer, 6U) == 0) return;
+    if (nvs_address_get(key, known) && memcmp(known, peer, 6U) == 0) return;
     nvs_handle_t nvs;
     if (nvs_open(MODULE_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
-        (void)nvs_set_blob(nvs, MODULE_NVS_PEER_KEY, peer, 6U);
+        (void)nvs_set_blob(nvs, key, peer, 6U);
         (void)nvs_commit(nvs);
         nvs_close(nvs);
     }
 }
 
-void module_state_forget_peer(void)
+static void nvs_address_erase(const char *key)
 {
     nvs_handle_t nvs;
     if (nvs_open(MODULE_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
-        (void)nvs_erase_key(nvs, MODULE_NVS_PEER_KEY);
+        (void)nvs_erase_key(nvs, key);
         (void)nvs_commit(nvs);
         nvs_close(nvs);
     }
 }
+
+bool module_state_last_peer(uint8_t out[6]) { return nvs_address_get(MODULE_NVS_PEER_KEY, out); }
+void module_state_remember_peer(const uint8_t peer[6]) { nvs_address_set(MODULE_NVS_PEER_KEY, peer); }
+void module_state_forget_peer(void) { nvs_address_erase(MODULE_NVS_PEER_KEY); }
+bool module_state_last_speaker(uint8_t out[6]) { return nvs_address_get(MODULE_NVS_SPEAKER_KEY, out); }
+void module_state_remember_speaker(const uint8_t peer[6]) { nvs_address_set(MODULE_NVS_SPEAKER_KEY, peer); }
+void module_state_forget_speaker(void) { nvs_address_erase(MODULE_NVS_SPEAKER_KEY); }

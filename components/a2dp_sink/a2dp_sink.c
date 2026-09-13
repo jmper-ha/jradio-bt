@@ -424,6 +424,10 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         break;
     }
     case ESP_A2D_PROF_STATE_EVT:
+        if (s_listener.profile != NULL) {
+            s_listener.profile(param->a2d_prof_stat.init_state == ESP_A2D_INIT_SUCCESS);
+        }
+        break;
     case ESP_A2D_SNK_PSC_CFG_EVT:
     case ESP_A2D_SNK_SET_DELAY_VALUE_EVT:
     case ESP_A2D_SNK_GET_DELAY_VALUE_EVT:
@@ -565,10 +569,14 @@ static void a2dp_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_
     }
 }
 
-esp_err_t a2dp_sink_start(const a2dp_sink_listener_t *listener)
+static bool s_prepared;
+static bool s_profile_up;
+
+/* The parts that live for the whole boot: locks, timers, the pairing
+ * policy. Done once; the profile itself goes up and down around them. */
+static esp_err_t a2dp_sink_prepare(void)
 {
-    if (listener == NULL) return ESP_ERR_INVALID_ARG;
-    s_listener = *listener;
+    if (s_prepared) return ESP_OK;
     s_track_lock = xSemaphoreCreateMutex();
     s_cover_lock = xSemaphoreCreateMutex();
     if (s_track_lock == NULL || s_cover_lock == NULL) return ESP_ERR_NO_MEM;
@@ -588,6 +596,16 @@ esp_err_t a2dp_sink_start(const a2dp_sink_listener_t *listener)
     ESP_RETURN_ON_ERROR(esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &io_capability,
                                                       sizeof(io_capability)),
                         TAG, "io cap");
+    s_prepared = true;
+    return ESP_OK;
+}
+
+esp_err_t a2dp_sink_start(const a2dp_sink_listener_t *listener)
+{
+    if (listener == NULL) return ESP_ERR_INVALID_ARG;
+    s_listener = *listener;
+    ESP_RETURN_ON_ERROR(a2dp_sink_prepare(), TAG, "prepare");
+    if (s_profile_up) return ESP_OK;
     ESP_RETURN_ON_ERROR(esp_bt_gap_register_callback(a2dp_gap_callback), TAG, "gap cb");
 
     ESP_RETURN_ON_ERROR(esp_avrc_ct_init(), TAG, "avrc ct");
@@ -604,8 +622,24 @@ esp_err_t a2dp_sink_start(const a2dp_sink_listener_t *listener)
     ESP_RETURN_ON_ERROR(esp_a2d_sink_register_data_callback(a2dp_data_callback), TAG, "a2dp data cb");
     ESP_RETURN_ON_ERROR(esp_a2d_sink_init(), TAG, "a2dp sink");
     audio_out_set_volume(s_volume);
+    s_profile_up = true;
     a2dp_scan_mode();
     ESP_LOGI(TAG, "ready");
+    return ESP_OK;
+}
+
+esp_err_t a2dp_sink_stop(void)
+{
+    if (!s_profile_up) return ESP_OK;
+    s_profile_up = false;
+    s_enabled = false;
+    if (s_connected) (void)esp_a2d_sink_disconnect(s_peer);
+    (void)esp_timer_stop(s_nudge_timer);
+    (void)esp_timer_stop(s_poll_timer);
+    (void)esp_avrc_tg_deinit();
+    (void)esp_avrc_ct_deinit();
+    ESP_RETURN_ON_ERROR(esp_a2d_sink_deinit(), TAG, "a2dp sink deinit");
+    ESP_LOGI(TAG, "down");
     return ESP_OK;
 }
 

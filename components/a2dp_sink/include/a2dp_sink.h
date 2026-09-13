@@ -38,6 +38,8 @@ typedef struct {
      * bytes stay with the sink until the next cover; a2dp_sink_cover_read()
      * hands them out in pieces. */
     void (*cover)(uint32_t size, jbt_image_t kind, uint32_t hash);
+    /* Bluedroid confirmed the profile is up (true) or down (false). */
+    void (*profile)(bool up);
 } a2dp_sink_listener_t;
 
 /* Copies up to `max` bytes of the current cover from `offset` into `out`;
@@ -45,8 +47,13 @@ typedef struct {
  * the bytes belong to, so a reader can tell it changed under them. */
 size_t a2dp_sink_cover_read(uint32_t offset, uint8_t *out, size_t max, uint32_t *hash);
 
-/* Registers the profiles with a running stack. Once per boot. */
+/* Registers the profiles with a running stack. May be called again after
+ * a2dp_sink_stop(): Bluedroid runs one A2DP role at a time, and the source
+ * takes the sink's place while the module sends rather than receives. */
 esp_err_t a2dp_sink_start(const a2dp_sink_listener_t *listener);
+/* Takes the profiles down. Bluedroid confirms with ESP_A2D_PROF_STATE_EVT
+ * (DEINIT) a moment later; the source must not be started before that. */
+esp_err_t a2dp_sink_stop(void);
 
 /* Connectable or not: in sink mode a phone may come back on its own; off,
  * nothing may connect and a live connection is dropped. */

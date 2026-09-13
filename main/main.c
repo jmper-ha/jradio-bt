@@ -10,12 +10,17 @@
 #include <string.h>
 
 #include "a2dp_sink.h"
+#include "a2dp_source.h"
+#include "audio_in.h"
 #include "audio_out.h"
 #include "bt_stack.h"
 #include "esp_log.h"
 #include "jbt_link.h"
 #include "jbt_proto.h"
 #include "module_state.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "version.h"
@@ -67,38 +72,123 @@ static void send_mode_ack(jbt_mode_t mode, jbt_result_t result)
  * own pins. Going to sink, the host has already let go of the bus when it
  * asks; going to off, it takes the bus back only after the ack. So the bus
  * is claimed before the ack on the way in and released before it on the way
- * out, and there is never a moment with two drivers. */
+ * out, and there is never a moment with two drivers.
+ *
+ * The switch runs on its own task: Bluedroid runs one A2DP role at a time,
+ * and taking one profile down before the other comes up is a request whose
+ * completion arrives as an event - the link task must not sit waiting for
+ * it. The profile events give the semaphore; the worker takes it. */
+static SemaphoreHandle_t s_profile_event;
+static volatile bool s_profile_up;
+static TaskHandle_t s_mode_worker;
+static volatile uint8_t s_mode_wanted;
+static SemaphoreHandle_t s_mode_request;
+#define MODE_PROFILE_WAIT_MS 3000
+
+static void on_profile(bool up)
+{
+    s_profile_up = up;
+    if (s_profile_event != NULL) xSemaphoreGive(s_profile_event);
+}
+
+static bool wait_profile(bool up)
+{
+    for (int i = 0; i < 3; ++i) {
+        if (s_profile_up == up) return true;
+        if (xSemaphoreTake(s_profile_event, pdMS_TO_TICKS(MODE_PROFILE_WAIT_MS)) != pdTRUE) break;
+    }
+    return s_profile_up == up;
+}
+
+static const a2dp_sink_listener_t s_sink_listener;
+static const a2dp_source_listener_t s_source_listener;
+
+static jbt_result_t leave_mode(jbt_mode_t mode)
+{
+    switch (mode) {
+    case JBT_MODE_SINK:
+        a2dp_sink_set_enabled(false);
+        audio_out_release();
+        (void)xSemaphoreTake(s_profile_event, 0);
+        if (a2dp_sink_stop() != ESP_OK || !wait_profile(false)) {
+            ESP_LOGE(TAG, "the sink would not go down");
+            return JBT_RESULT_FAILED;
+        }
+        return JBT_RESULT_OK;
+    case JBT_MODE_SOURCE:
+        (void)xSemaphoreTake(s_profile_event, 0);
+        if (a2dp_source_stop() != ESP_OK || !wait_profile(false)) {
+            ESP_LOGE(TAG, "the source would not go down");
+            return JBT_RESULT_FAILED;
+        }
+        audio_in_close();
+        return JBT_RESULT_OK;
+    default: return JBT_RESULT_OK;
+    }
+}
+
+static jbt_result_t take_mode(jbt_mode_t mode)
+{
+    switch (mode) {
+    case JBT_MODE_SINK: {
+        (void)xSemaphoreTake(s_profile_event, 0);
+        if (a2dp_sink_start(&s_sink_listener) != ESP_OK || !wait_profile(true)) {
+            ESP_LOGE(TAG, "the sink would not come up");
+            return JBT_RESULT_FAILED;
+        }
+        const esp_err_t err = audio_out_claim();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "cannot claim the bus: %s", esp_err_to_name(err));
+            return JBT_RESULT_FAILED;
+        }
+        a2dp_sink_set_enabled(true);
+        /* Back to the phone that was here last: an iPhone waits to be
+         * called, it does not call - so after a reboot of the module
+         * mid-play the music stayed off until somebody tapped it. */
+        uint8_t peer[6];
+        if (module_state_last_peer(peer)) {
+            ESP_LOGI(TAG, "calling the last phone %02X:%02X:%02X:%02X:%02X:%02X", peer[0], peer[1],
+                     peer[2], peer[3], peer[4], peer[5]);
+            (void)a2dp_sink_connect(peer);
+        }
+        return JBT_RESULT_OK;
+    }
+    case JBT_MODE_SOURCE: {
+        (void)xSemaphoreTake(s_profile_event, 0);
+        if (a2dp_source_start(&s_source_listener) != ESP_OK || !wait_profile(true)) {
+            ESP_LOGE(TAG, "the source would not come up");
+            return JBT_RESULT_FAILED;
+        }
+        const esp_err_t err = audio_in_open();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "cannot listen on the bus: %s", esp_err_to_name(err));
+            return JBT_RESULT_FAILED;
+        }
+        /* The speaker that was here last, called back like the phone. */
+        uint8_t peer[6];
+        if (module_state_last_speaker(peer)) {
+            ESP_LOGI(TAG, "calling the last speaker %02X:%02X:%02X:%02X:%02X:%02X", peer[0],
+                     peer[1], peer[2], peer[3], peer[4], peer[5]);
+            (void)a2dp_source_connect(peer);
+        }
+        return JBT_RESULT_OK;
+    }
+    default: return JBT_RESULT_OK;
+    }
+}
+
 static jbt_result_t enter_mode(jbt_mode_t mode)
 {
     module_state_t state;
     module_state_get(&state);
     if (state.status.mode == mode) return JBT_RESULT_OK;
-    /* Leave the old mode first. */
-    if (state.status.mode == JBT_MODE_SINK) {
-        a2dp_sink_set_enabled(false);
-        audio_out_release();
-    }
-    jbt_result_t result = JBT_RESULT_OK;
-    if (mode == JBT_MODE_SINK) {
-        const esp_err_t err = audio_out_claim();
-        if (err != ESP_OK) {
-            /* Reported as off, which is what the host must assume about the
-             * bus when the claim failed. */
-            ESP_LOGE(TAG, "cannot claim the bus: %s", esp_err_to_name(err));
-            mode = JBT_MODE_OFF;
-            result = JBT_RESULT_FAILED;
-        } else {
-            a2dp_sink_set_enabled(true);
-            /* Back to the phone that was here last: an iPhone waits to be
-             * called, it does not call - so after a reboot of the module
-             * mid-play the music stayed off until somebody tapped it. */
-            uint8_t peer[6];
-            if (module_state_last_peer(peer)) {
-                ESP_LOGI(TAG, "calling the last phone %02X:%02X:%02X:%02X:%02X:%02X", peer[0],
-                         peer[1], peer[2], peer[3], peer[4], peer[5]);
-                (void)a2dp_sink_connect(peer);
-            }
-        }
+    jbt_result_t result = leave_mode((jbt_mode_t)state.status.mode);
+    if (result == JBT_RESULT_OK) result = take_mode(mode);
+    if (result != JBT_RESULT_OK) {
+        /* Reported as off, which is what the host must assume about the
+         * bus when the switch failed; whatever came up is taken down. */
+        (void)leave_mode(mode);
+        mode = JBT_MODE_OFF;
     }
     module_state_set_mode(mode);
     module_state_set_connection(JBT_CONN_NONE, NULL, NULL);
@@ -107,37 +197,67 @@ static jbt_result_t enter_mode(jbt_mode_t mode)
     return result;
 }
 
+static void mode_worker(void *arg)
+{
+    (void)arg;
+    while (true) {
+        if (xSemaphoreTake(s_mode_request, portMAX_DELAY) != pdTRUE) continue;
+        const jbt_mode_t wanted = (jbt_mode_t)s_mode_wanted;
+        const jbt_result_t result = enter_mode(wanted);
+        module_state_t state;
+        module_state_get(&state);
+        send_mode_ack((jbt_mode_t)state.status.mode, result);
+        send_status();
+    }
+}
+
 static void handle_set_mode(const jbt_frame_t *frame)
 {
     jbt_reader_t reader;
     jbt_reader_init(&reader, frame->payload, frame->len);
     uint8_t mode = 0;
-    if (!jbt_get_u8(&reader, &mode)) {
+    if (!jbt_get_u8(&reader, &mode) || mode > JBT_MODE_SOURCE) {
         send_mode_ack(JBT_MODE_OFF, JBT_RESULT_BAD_ARG);
         return;
     }
-    switch ((jbt_mode_t)mode) {
-    case JBT_MODE_OFF:
-    case JBT_MODE_SINK: {
-        const jbt_result_t result = enter_mode((jbt_mode_t)mode);
-        module_state_t state;
-        module_state_get(&state);
-        send_mode_ack((jbt_mode_t)state.status.mode, result);
-        send_status();
-        return;
-    }
-    case JBT_MODE_SOURCE:
-        send_mode_ack((jbt_mode_t)mode, JBT_RESULT_UNSUPPORTED);
-        return;
-    }
-    send_mode_ack(JBT_MODE_OFF, JBT_RESULT_BAD_ARG);
+    s_mode_wanted = mode;
+    xSemaphoreGive(s_mode_request);
 }
 
 static void handle_connect(const jbt_frame_t *frame)
 {
     jbt_result_t result = JBT_RESULT_BAD_ARG;
     if (frame->len == 6U) {
-        result = a2dp_sink_connect(frame->payload) == ESP_OK ? JBT_RESULT_OK : JBT_RESULT_FAILED;
+        module_state_t state;
+        module_state_get(&state);
+        esp_err_t err = ESP_ERR_INVALID_STATE;
+        if (state.status.mode == JBT_MODE_SINK) err = a2dp_sink_connect(frame->payload);
+        if (state.status.mode == JBT_MODE_SOURCE) err = a2dp_source_connect(frame->payload);
+        result = err == ESP_OK ? JBT_RESULT_OK : err == ESP_ERR_INVALID_STATE ? JBT_RESULT_BUSY : JBT_RESULT_FAILED;
+    }
+    if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, result);
+}
+
+static void handle_scan(const jbt_frame_t *frame)
+{
+    jbt_result_t result = JBT_RESULT_BAD_ARG;
+    if (frame->len == 1U) {
+        const esp_err_t err = a2dp_source_scan(frame->payload[0] != 0U);
+        result = err == ESP_OK ? JBT_RESULT_OK : err == ESP_ERR_INVALID_STATE ? JBT_RESULT_BUSY : JBT_RESULT_FAILED;
+    }
+    if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, result);
+}
+
+static void handle_i2s_format(const jbt_frame_t *frame)
+{
+    jbt_reader_t reader;
+    jbt_reader_init(&reader, frame->payload, frame->len);
+    uint32_t rate;
+    uint8_t bits;
+    uint8_t channels;
+    jbt_result_t result = JBT_RESULT_BAD_ARG;
+    if (jbt_get_u32(&reader, &rate) && jbt_get_u8(&reader, &bits) && jbt_get_u8(&reader, &channels)) {
+        result = audio_in_set_format(rate, bits, channels) == ESP_OK ? JBT_RESULT_OK : JBT_RESULT_BAD_ARG;
     }
     if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, result);
 }
@@ -156,7 +276,13 @@ static void handle_set_volume(const jbt_frame_t *frame)
 {
     jbt_result_t result = JBT_RESULT_BAD_ARG;
     if (frame->len == 1U) {
-        a2dp_sink_set_volume(frame->payload[0]);
+        module_state_t state;
+        module_state_get(&state);
+        if (state.status.mode == JBT_MODE_SOURCE) {
+            (void)a2dp_source_set_volume(frame->payload[0]);
+        } else {
+            a2dp_sink_set_volume(frame->payload[0]);
+        }
         module_state_set_volume(frame->payload[0]);
         result = JBT_RESULT_OK;
     }
@@ -219,14 +345,19 @@ static void on_frame(const jbt_frame_t *frame, void *context)
     case JBT_MSG_CONNECT: handle_connect(frame); return;
     case JBT_MSG_DISCONNECT:
         (void)a2dp_sink_disconnect();
+        (void)a2dp_source_disconnect();
         if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, JBT_RESULT_OK);
         return;
+    case JBT_MSG_SCAN: handle_scan(frame); return;
+    case JBT_MSG_I2S_FORMAT: handle_i2s_format(frame); return;
     case JBT_MSG_PASSTHROUGH: handle_passthrough(frame); return;
     case JBT_MSG_SET_VOLUME: handle_set_volume(frame); return;
     case JBT_MSG_COVER_GET: handle_cover_get(frame); return;
     case JBT_MSG_FORGET:
         module_state_forget_peer();
+        module_state_forget_speaker();
         (void)a2dp_sink_disconnect();
+        (void)a2dp_source_disconnect();
         if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, JBT_RESULT_OK);
         return;
     case JBT_MSG_ACK: return; /* nothing the module sends asks for one yet */
@@ -347,6 +478,52 @@ static void on_volume(uint8_t volume)
     (void)jbt_link_send(JBT_MSG_VOLUME, 0U, payload, sizeof(payload), NULL);
 }
 
+static void on_scan_result(const a2dp_scan_result_t *result)
+{
+    uint8_t payload[6U + 1U + 4U + 2U + 64U];
+    jbt_writer_t writer;
+    jbt_writer_init(&writer, payload, sizeof(payload));
+    jbt_put_bytes(&writer, result->address, 6U);
+    jbt_put_u8(&writer, (uint8_t)result->rssi);
+    jbt_put_u32(&writer, result->class_of_device);
+    jbt_put_tlv_string(&writer, JBT_TAG_NAME, result->name);
+    if (!writer.overflow) (void)jbt_link_send(JBT_MSG_SCAN_RESULT, 0U, payload, writer.length, NULL);
+}
+
+static void on_scanning(bool scanning)
+{
+    module_state_t current;
+    module_state_get(&current);
+    if (current.status.connection != JBT_CONN_CONNECTED) {
+        module_state_set_connection(scanning ? JBT_CONN_SCANNING : JBT_CONN_NONE, NULL, NULL);
+    }
+    send_status();
+}
+
+static void on_source_connection(jbt_conn_t state, const uint8_t *address)
+{
+    if (state == JBT_CONN_CONNECTED) module_state_remember_speaker(address);
+    on_connection(state, address);
+}
+
+static const a2dp_sink_listener_t s_sink_listener = {
+    .connection = on_connection, .peer_name = on_peer_name, .audio_format = on_audio_format,
+    .play = on_play, .track = on_track, .position = on_position, .volume = on_volume,
+    .cover = on_cover, .profile = on_profile,
+};
+
+static void on_speaker_key(jbt_key_t key)
+{
+    const uint8_t payload[1] = {(uint8_t)key};
+    (void)jbt_link_send(JBT_MSG_KEY, 0U, payload, sizeof(payload), NULL);
+}
+
+static const a2dp_source_listener_t s_source_listener = {
+    .connection = on_source_connection, .peer_name = on_peer_name, .scan_result = on_scan_result,
+    .scanning = on_scanning, .play = on_play, .profile = on_profile, .key = on_speaker_key,
+    .volume = on_volume,
+};
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -366,15 +543,14 @@ void app_main(void)
     module_state_t state;
     module_state_get(&state);
     ESP_ERROR_CHECK(bt_stack_start(state.name));
-    const a2dp_sink_listener_t listener = {
-        .connection = on_connection, .peer_name = on_peer_name, .audio_format = on_audio_format,
-        .play = on_play, .track = on_track, .position = on_position, .volume = on_volume,
-        .cover = on_cover,
-    };
-    ESP_ERROR_CHECK(a2dp_sink_start(&listener));
-    /* Off until the host says otherwise: the bus is the host's by default,
-     * and a phone must not be able to connect to a module nobody asked for. */
+    s_profile_event = xSemaphoreCreateBinary();
+    s_mode_request = xSemaphoreCreateBinary();
+    if (s_profile_event == NULL || s_mode_request == NULL) abort();
+    /* No profile is up until the host names a mode: the bus is the host's
+     * by default, a phone must not be able to connect to a module nobody
+     * asked for, and which of the two roles is wanted is the host's call. */
     audio_out_release();
+    if (xTaskCreate(mode_worker, "mode", 4096, NULL, 10, &s_mode_worker) != pdPASS) abort();
 
     send_event(JBT_EVENT_BOOTED, state.name);
     send_status();
