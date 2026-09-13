@@ -47,11 +47,21 @@ stays off its channel.
 
 ## Flashing
 
-One build for every board - the module has no screen. ESP-IDF 5.5.x:
+One build for every board - the module has no screen. ESP-IDF 5.5.x, the
+same as jRadio's; how to install it is in
+[jRadio's guide](https://github.com/jmper-ha/jradio/blob/main/doc/toolchain.en.md).
+
+In VS Code with the ESP-IDF extension: open the folder, Terminal -> Run Task...
+-> **ESP-IDF: Flash** (or "Build, Flash & Monitor"). The tasks call the same
+wrappers jRadio has - `tools/idf.sh`, and `tools/idf.ps1` on Windows - which
+find the installed ESP-IDF and the port themselves; with two boards attached,
+name the module's port in `ESPPORT`. The `esp32` target is already set in
+`sdkconfig.defaults`.
+
+From a terminal:
 
 ```bash
 source <esp-idf>/export.sh
-idf.py set-target esp32                 # once
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor    # the module's USB console port
 ```

@@ -11,8 +11,8 @@ depends on the mode (see README.md (README.en.md in English) and the design note
 
 ```bash
 source <idf-path>/export.sh
-idf.py set-target esp32              # once
-idf.py build
+idf.py build                         # target esp32 comes from sdkconfig.defaults
+bash tools/idf.sh build              # the same with ESP-IDF found and activated (VS Code tasks)
 idf.py -p /dev/ttyUSB0 flash monitor
 bash tests/run_host_tests.sh         # protocol tests: gcc + sanitizers, no IDF
 tools/jbt.py -p /dev/ttyUSB1 ping    # talk to the module from the PC

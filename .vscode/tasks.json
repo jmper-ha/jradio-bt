@@ -1,0 +1,67 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ESP-IDF: Build",
+      "detail": "Собрать прошивку модуля",
+      "type": "shell",
+      "command": "bash tools/idf.sh build",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/idf.ps1 build"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "ESP-IDF: Flash",
+      "detail": "Собрать и залить прошивку модуля",
+      "type": "shell",
+      "command": "bash tools/idf.sh flash",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/idf.ps1 flash"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "ESP-IDF: Build, Flash & Monitor",
+      "detail": "То же самое и сразу лог модуля; выход из лога Ctrl+]",
+      "type": "shell",
+      "command": "bash tools/idf.sh flash monitor",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/idf.ps1 flash monitor"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "panel": "dedicated"
+      },
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "ESP-IDF: Monitor",
+      "detail": "Лог модуля без перепрошивки; выход Ctrl+]",
+      "type": "shell",
+      "command": "bash tools/idf.sh monitor",
+      "windows": {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/idf.ps1 monitor"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

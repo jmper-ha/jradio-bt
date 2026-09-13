@@ -46,11 +46,20 @@ jRadio, и слушается его по UART.
 
 ## Прошивка
 
-Одна сборка на все платы — экрана у модуля нет. Нужен ESP-IDF 5.5.x:
+Одна сборка на все платы — экрана у модуля нет. Нужен ESP-IDF 5.5.x, тот же,
+что у jRadio; как его поставить — в
+[инструкции jRadio](https://github.com/jmper-ha/jradio/blob/main/doc/toolchain.md).
+
+В VS Code с расширением ESP-IDF: открыть папку, Terminal → Run Task… →
+**ESP-IDF: Flash** (или «Build, Flash & Monitor»). Задачи зовут те же обёртки,
+что и у jRadio — `tools/idf.sh` и `tools/idf.ps1` под Windows, — которые сами
+находят установленный ESP-IDF и порт; если плат подключено две, порт модуля
+задаётся переменной `ESPPORT`. Цель `esp32` уже задана в `sdkconfig.defaults`.
+
+Из терминала:
 
 ```bash
 source <esp-idf>/export.sh
-idf.py set-target esp32                 # один раз
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor    # порт USB-консоли модуля
 ```

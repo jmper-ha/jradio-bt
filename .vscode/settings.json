@@ -1,3 +1,19 @@
 {
-    "idf.currentSetup": "/home/jmper/.espressif/v5.5.4/esp-idf"
+  "idf.adapterTargetName": "esp32",
+  "idf.buildPath": "${workspaceFolder}/build",
+  "idf.monitorBaudRate": 115200,
+  "idf.flashType": "UART",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32"
+  },
+  "files.associations": {
+    "*.c": "c",
+    "*.h": "c"
+  },
+  "clangd.path": "/home/jmper/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/home/jmper/codex/jradio-bt/build"
+  ]
 }
