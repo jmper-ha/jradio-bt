@@ -229,6 +229,11 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     }
 }
 
+static void a2dp_subscribe_volume(void)
+{
+    (void)esp_avrc_ct_send_register_notification_cmd(a2dp_next_transaction(), ESP_AVRC_RN_VOLUME_CHANGE, 0U);
+}
+
 /* The speaker's own volume: we are the controller here, and a speaker that
  * supports absolute volume takes it as a command. */
 static void a2dp_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param)
@@ -239,8 +244,29 @@ static void a2dp_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_
         ESP_LOGI(TAG, "speaker %s absolute volume", s_peer_takes_volume ? "takes" : "does not take");
         break;
     case ESP_AVRC_CT_CONNECTION_STATE_EVT:
-    case ESP_AVRC_CT_SET_ABSOLUTE_VOLUME_RSP_EVT:
+        if (param->conn_stat.connected) {
+            (void)esp_avrc_ct_send_get_rn_capabilities_cmd(a2dp_next_transaction());
+        }
+        break;
     case ESP_AVRC_CT_GET_RN_CAPABILITIES_RSP_EVT:
+        /* A speaker with its own volume wheel does not send it as keys: it
+         * changes the level itself and tells a subscribed controller. */
+        if (esp_avrc_rn_evt_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_TEST,
+                                               (esp_avrc_rn_evt_cap_mask_t *)&param->get_rn_caps_rsp.evt_set,
+                                               ESP_AVRC_RN_VOLUME_CHANGE)) {
+            a2dp_subscribe_volume();
+        }
+        break;
+    case ESP_AVRC_CT_CHANGE_NOTIFY_EVT:
+        if (param->change_ntf.event_id == ESP_AVRC_RN_VOLUME_CHANGE) {
+            const uint8_t volume = param->change_ntf.event_parameter.volume & 0x7FU;
+            ESP_LOGI(TAG, "speaker turned its volume to %u", volume);
+            if (s_listener.volume != NULL) s_listener.volume(volume);
+            /* A notification fires once; ask again for the next turn. */
+            a2dp_subscribe_volume();
+        }
+        break;
+    case ESP_AVRC_CT_SET_ABSOLUTE_VOLUME_RSP_EVT:
         break;
     default:
         ESP_LOGD(TAG, "avrc ct event %d", event);
@@ -264,12 +290,22 @@ static void a2dp_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_
         case ESP_AVRC_PT_CMD_BACKWARD: key = JBT_KEY_PREV; break;
         case ESP_AVRC_PT_CMD_FAST_FORWARD: key = JBT_KEY_FAST_FORWARD; break;
         case ESP_AVRC_PT_CMD_REWIND: key = JBT_KEY_REWIND; break;
-        default: ESP_LOGD(TAG, "speaker key 0x%02x", param->psth_cmd.key_code); return;
+        case ESP_AVRC_PT_CMD_VOL_UP: key = JBT_KEY_VOLUME_UP; break;
+        case ESP_AVRC_PT_CMD_VOL_DOWN: key = JBT_KEY_VOLUME_DOWN; break;
+        case ESP_AVRC_PT_CMD_MUTE: key = JBT_KEY_MUTE; break;
+        default: ESP_LOGI(TAG, "speaker key 0x%02x ignored", param->psth_cmd.key_code); return;
         }
         ESP_LOGI(TAG, "speaker key %d", key);
         if (s_listener.key != NULL) s_listener.key(key);
         break;
     }
+    case ESP_AVRC_TG_CONNECTION_STATE_EVT:
+        ESP_LOGI(TAG, "speaker's controller %s", param->conn_stat.connected ? "connected" : "gone");
+        break;
+    case ESP_AVRC_TG_REMOTE_FEATURES_EVT:
+        ESP_LOGI(TAG, "speaker's controller features 0x%x flags 0x%x", (unsigned)param->rmt_feats.feat_mask,
+                 (unsigned)param->rmt_feats.ct_feat_flag);
+        break;
     case ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT:
         ESP_LOGI(TAG, "speaker set volume %u", param->set_abs_vol.volume & 0x7FU);
         if (s_listener.volume != NULL) s_listener.volume(param->set_abs_vol.volume & 0x7FU);
@@ -300,13 +336,24 @@ esp_err_t a2dp_source_start(const a2dp_source_listener_t *listener)
     ESP_RETURN_ON_ERROR(esp_avrc_ct_register_callback(a2dp_ct_callback), TAG, "avrc ct cb");
     ESP_RETURN_ON_ERROR(esp_avrc_tg_init(), TAG, "avrc tg");
     ESP_RETURN_ON_ERROR(esp_avrc_tg_register_callback(a2dp_tg_callback), TAG, "avrc tg cb");
-    /* All the transport keys a speaker might carry, accepted rather than
-     * refused: the stack's default filter allows only a few. */
+    /* The keys a speaker carries, accepted rather than refused: the default
+     * filter is empty, and a refused key never reaches the callback. Listed
+     * one by one because the set must stay inside the stack's allowed set -
+     * one code outside it (RECORD, EJECT) and the whole call is rejected,
+     * which is how the speaker's buttons once did nothing. Not read back
+     * from the stack: the target's init is still in flight here. */
+    static const esp_avrc_pt_cmd_t codes[] = {
+        ESP_AVRC_PT_CMD_VOL_UP, ESP_AVRC_PT_CMD_VOL_DOWN, ESP_AVRC_PT_CMD_MUTE,
+        ESP_AVRC_PT_CMD_PLAY, ESP_AVRC_PT_CMD_STOP, ESP_AVRC_PT_CMD_PAUSE,
+        ESP_AVRC_PT_CMD_REWIND, ESP_AVRC_PT_CMD_FAST_FORWARD,
+        ESP_AVRC_PT_CMD_FORWARD, ESP_AVRC_PT_CMD_BACKWARD,
+    };
     esp_avrc_psth_bit_mask_t keys = {0};
-    for (int code = ESP_AVRC_PT_CMD_PLAY; code <= ESP_AVRC_PT_CMD_BACKWARD; ++code) {
-        esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &keys, (esp_avrc_pt_cmd_t)code);
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
+        esp_avrc_psth_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &keys, codes[i]);
     }
-    (void)esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &keys);
+    ESP_RETURN_ON_ERROR(esp_avrc_tg_set_psth_cmd_filter(ESP_AVRC_PSTH_FILTER_SUPPORTED_CMD, &keys), TAG,
+                        "psth supported");
     esp_avrc_rn_evt_cap_mask_t capabilities = {0};
     esp_avrc_rn_evt_bit_mask_operation(ESP_AVRC_BIT_MASK_OP_SET, &capabilities, ESP_AVRC_RN_VOLUME_CHANGE);
     (void)esp_avrc_tg_set_rn_evt_cap(&capabilities);
