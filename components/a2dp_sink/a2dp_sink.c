@@ -75,6 +75,8 @@ static esp_timer_handle_t s_nudge_timer;
 /* The cover-art channel (BIP over OBEX) and the one picture it fetched. */
 static bool s_cover_channel;
 static bool s_cover_fetching;
+/* Whether this track's metadata named a picture at all. */
+static bool s_cover_seen;
 static uint8_t s_cover_handle[A2DP_COVER_HANDLE_LEN];
 static uint8_t *s_cover;
 static uint32_t s_cover_size;
@@ -100,6 +102,8 @@ static void a2dp_scan_mode(void)
     }
 }
 
+static void a2dp_cover_drop(void);
+
 static void a2dp_settle_fired(void *arg)
 {
     (void)arg;
@@ -110,8 +114,12 @@ static void a2dp_settle_fired(void *arg)
     static a2dp_track_t copy;
     xSemaphoreTake(s_track_lock, portMAX_DELAY);
     copy = s_track;
+    const bool cover_seen = s_cover_seen;
     xSemaphoreGive(s_track_lock);
     if (s_listener.track != NULL) s_listener.track(&copy);
+    /* Metadata that named no picture: this track has none, and the one
+     * held is the previous track's. */
+    if (!cover_seen) a2dp_cover_drop();
 }
 
 static void a2dp_poll_fired(void *arg)
@@ -166,6 +174,7 @@ static void a2dp_request_metadata(void)
 {
     xSemaphoreTake(s_track_lock, portMAX_DELAY);
     memset(&s_track, 0, sizeof(s_track));
+    s_cover_seen = false;
     xSemaphoreGive(s_track_lock);
     (void)esp_avrc_ct_send_metadata_cmd(a2dp_next_transaction(), A2DP_METADATA_MASK);
 }
@@ -247,6 +256,7 @@ static jbt_image_t a2dp_cover_kind(const uint8_t *data, size_t length)
 static void a2dp_cover_drop(void)
 {
     xSemaphoreTake(s_cover_lock, portMAX_DELAY);
+    const bool had = s_cover != NULL || s_cover_fetching;
     free(s_cover);
     s_cover = NULL;
     s_cover_size = 0U;
@@ -254,6 +264,10 @@ static void a2dp_cover_drop(void)
     xSemaphoreGive(s_cover_lock);
     memset(s_cover_handle, 0, sizeof(s_cover_handle));
     s_cover_fetching = false;
+    /* Told at once, before any new picture is fetched: the host otherwise
+     * kept the last track's cover up until the next one arrived, and for
+     * a track without one, for good. */
+    if (had && s_listener.cover != NULL) s_listener.cover(0U, JBT_IMAGE_JPEG, 0U);
 }
 
 /* A handle came with the metadata: fetch the picture when it is a new one.
@@ -475,6 +489,7 @@ static void a2dp_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_
         case ESP_AVRC_MD_ATTR_PLAYING_TIME: s_track.duration_ms = (uint32_t)strtoul(text, NULL, 10); break;
         case ESP_AVRC_MD_ATTR_TRACK_NUM: s_track.track_no = (uint32_t)strtoul(text, NULL, 10); break;
         case ESP_AVRC_MD_ATTR_COVER_ART:
+            s_cover_seen = true;
             xSemaphoreGive(s_track_lock);
             a2dp_cover_handle((const uint8_t *)text, length);
             xSemaphoreTake(s_track_lock, portMAX_DELAY);
