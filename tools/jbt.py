@@ -138,7 +138,7 @@ def describe(mtype: int, flags: int, seq: int, payload: bytes) -> str:
                     f"rate={rate} play={PLAY[play]} volume={vol} {tlv(payload, 15)}")
         if mtype == MSG["PONG"]:
             proto, major, minor, build = struct.unpack("<BBBH", payload)
-            return f"PONG protocol={proto} firmware={major}.{minor} build {build}"
+            return f"PONG protocol={proto} firmware={major}.{minor}.{build}"
         if mtype == MSG["MODE_ACK"]:
             return f"MODE_ACK mode={MODE[payload[0]]} result={RESULT[payload[1]]}"
         if mtype == MSG["ACK"]:

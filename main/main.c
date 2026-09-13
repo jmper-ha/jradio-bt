@@ -14,6 +14,7 @@
 #include "audio_in.h"
 #include "audio_out.h"
 #include "bt_stack.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "jbt_link.h"
 #include "jbt_proto.h"
@@ -557,8 +558,8 @@ void app_main(void)
     /* The link first: from here on every log line reaches the host too, and
      * the stack's own start-up is the first thing worth seeing there. */
     ESP_ERROR_CHECK(jbt_link_start(on_frame, NULL));
-    ESP_LOGI(TAG, "jradio-bt %u.%u build %u, protocol %u", JBT_FW_MAJOR, JBT_FW_MINOR, JBT_FW_BUILD,
-             JBT_PROTOCOL_VERSION);
+    ESP_LOGI(TAG, "jradio-bt %u.%u.%u (%s), protocol %u", JBT_FW_MAJOR, JBT_FW_MINOR, JBT_FW_BUILD,
+             esp_app_get_description()->version, JBT_PROTOCOL_VERSION);
 
     module_state_t state;
     module_state_get(&state);

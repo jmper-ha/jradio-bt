@@ -4,7 +4,7 @@ jradio-bt — the Bluetooth audio module beside jRadio (`../jradio`): an ESP32
 (classic, WROOM-32) running ESP-IDF 5.5.x that does A2DP sink and source,
 AVRCP metadata with cover art, and takes orders from the jRadio ESP32-S3 over
 one UART. It shares the S3's I2S bus with the PCM5102 DAC; who clocks the bus
-depends on the mode (see README.md and the design notes in
+depends on the mode (see README.md (README.en.md in English) and the design notes in
 `../jradio/.scratch/bluetooth/jradio-bt-proposal.md`).
 
 ## Commands
