@@ -7,6 +7,7 @@
  * jbt_proto.h; what is not implemented yet answers UNSUPPORTED rather than
  * silence, so the host's timeouts never fire on a known command. */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "a2dp_sink.h"
@@ -15,6 +16,7 @@
 #include "audio_out.h"
 #include "bt_stack.h"
 #include "esp_app_desc.h"
+#include "esp_gap_bt_api.h"
 #include "esp_log.h"
 #include "jbt_link.h"
 #include "jbt_proto.h"
@@ -247,6 +249,47 @@ static void handle_connect(const jbt_frame_t *frame)
     if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, result);
 }
 
+/* One device by address, or everything with no address: the bond goes,
+ * so a forgotten speaker cannot call back on its own, along with the
+ * memory of it and, if it is the one connected, the connection. */
+static void handle_forget(const jbt_frame_t *frame)
+{
+    module_state_t state;
+    module_state_get(&state);
+    if (frame->len == 6U) {
+        const uint8_t *address = frame->payload;
+        (void)esp_bt_gap_remove_bond_device((uint8_t *)address);
+        uint8_t remembered[6];
+        if (module_state_last_peer(remembered) && memcmp(remembered, address, 6U) == 0) {
+            module_state_forget_peer();
+        }
+        if (module_state_last_speaker(remembered) && memcmp(remembered, address, 6U) == 0) {
+            module_state_forget_speaker();
+        }
+        if (state.status.connection != JBT_CONN_NONE && memcmp(state.status.peer, address, 6U) == 0) {
+            (void)a2dp_sink_disconnect();
+            (void)a2dp_source_disconnect();
+        }
+        ESP_LOGI(TAG, "forgot %02X:%02X:%02X:%02X:%02X:%02X", address[0], address[1], address[2],
+                 address[3], address[4], address[5]);
+    } else {
+        int count = esp_bt_gap_get_bond_device_num();
+        if (count > 0) {
+            esp_bd_addr_t *bonded = calloc((size_t)count, sizeof(esp_bd_addr_t));
+            if (bonded != NULL && esp_bt_gap_get_bond_device_list(&count, bonded) == ESP_OK) {
+                for (int i = 0; i < count; ++i) (void)esp_bt_gap_remove_bond_device(bonded[i]);
+            }
+            free(bonded);
+        }
+        module_state_forget_peer();
+        module_state_forget_speaker();
+        (void)a2dp_sink_disconnect();
+        (void)a2dp_source_disconnect();
+        ESP_LOGI(TAG, "forgot every device");
+    }
+    if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, JBT_RESULT_OK);
+}
+
 static void handle_scan(const jbt_frame_t *frame)
 {
     jbt_result_t result = JBT_RESULT_BAD_ARG;
@@ -366,13 +409,7 @@ static void on_frame(const jbt_frame_t *frame, void *context)
     case JBT_MSG_PASSTHROUGH: handle_passthrough(frame); return;
     case JBT_MSG_SET_VOLUME: handle_set_volume(frame); return;
     case JBT_MSG_COVER_GET: handle_cover_get(frame); return;
-    case JBT_MSG_FORGET:
-        module_state_forget_peer();
-        module_state_forget_speaker();
-        (void)a2dp_sink_disconnect();
-        (void)a2dp_source_disconnect();
-        if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, JBT_RESULT_OK);
-        return;
+    case JBT_MSG_FORGET: handle_forget(frame); return;
     case JBT_MSG_ACK: return; /* nothing the module sends asks for one yet */
     default: break;
     }
