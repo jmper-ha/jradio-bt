@@ -14,8 +14,13 @@
 
 static const char *TAG = "a2dp_source";
 
-/* How long one scan runs: the inquiry length is in units of 1.28 s. */
-#define A2DP_SCAN_LENGTH 8
+/* How long one scan runs, in units of 1.28 s. Kept short: an inquiry
+ * transmits without pause on every channel, and with the host's Wi-Fi
+ * antenna a few centimetres away it starves the host's stream for as long
+ * as it runs (measured: the DAC ran dry within 4 s of a 10 s scan, and at
+ * the lowest TX power just the same). A speaker in the room answers in the
+ * first seconds. */
+#define A2DP_SCAN_LENGTH 4
 /* The stream is started when the bus is clocked and stopped when it has
  * gone quiet, checked on this period. Bluedroid's media control is a
  * request/ack pair, so the state below is the request in flight. */
