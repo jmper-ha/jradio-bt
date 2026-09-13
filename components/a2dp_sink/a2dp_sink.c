@@ -42,7 +42,20 @@ static esp_bd_addr_t s_peer;
 static uint8_t s_transaction;
 static esp_avrc_rn_evt_cap_mask_t s_peer_capabilities;
 static bool s_volume_notify_pending;
+/* A local change the phone was not registered to hear: told to it the
+ * moment it registers again. The phone re-registers 15-20 ms after each
+ * "changed", and a knob turned fast lands several clicks in that gap. */
+static bool s_volume_unsent;
 static uint8_t s_volume = 100;
+/* The last value the phone was told, and when. An iPhone moves its own
+ * slider without saying so once it has heard a "changed" from us - the
+ * next drag of it never reaches the sink - so while it is registered the
+ * value is re-told once a second whenever it drifts from what it last
+ * heard, and the slider snaps back to what the DAC is really at. */
+static uint8_t s_volume_told = 0xFFU;
+static esp_timer_handle_t s_volume_timer;
+#define A2DP_VOLUME_RETELL_US (250 * 1000)
+
 static a2dp_track_t s_track;
 static SemaphoreHandle_t s_track_lock;
 static esp_timer_handle_t s_settle_timer;
@@ -52,6 +65,13 @@ static esp_timer_handle_t s_settle_timer;
  * one handler serves both. */
 static esp_timer_handle_t s_poll_timer;
 static bool s_playing;
+/* Whether a stream has come since the connection. An iPhone that is
+ * called back by the sink sometimes keeps its player paused, or streams
+ * "to itself", until something presses play; after a few seconds without
+ * a stream the sink presses it. Once per connection. */
+static bool s_streamed;
+static esp_timer_handle_t s_nudge_timer;
+#define A2DP_NUDGE_US (5 * 1000 * 1000)
 /* The cover-art channel (BIP over OBEX) and the one picture it fetched. */
 static bool s_cover_channel;
 static bool s_cover_fetching;
@@ -98,6 +118,35 @@ static void a2dp_poll_fired(void *arg)
 {
     (void)arg;
     if (s_connected) (void)esp_avrc_ct_send_get_play_status_cmd(a2dp_next_transaction());
+}
+
+static void a2dp_nudge_fired(void *arg)
+{
+    (void)arg;
+    if (!s_connected || s_streamed) return;
+    ESP_LOGI(TAG, "no stream since the connection; pressing play");
+    (void)esp_avrc_ct_send_passthrough_cmd(a2dp_next_transaction(), ESP_AVRC_PT_CMD_PLAY,
+                                          ESP_AVRC_PT_CMD_STATE_PRESSED);
+    (void)esp_avrc_ct_send_passthrough_cmd(a2dp_next_transaction(), ESP_AVRC_PT_CMD_PLAY,
+                                          ESP_AVRC_PT_CMD_STATE_RELEASED);
+}
+
+static void a2dp_tell_volume(void)
+{
+    esp_avrc_rn_param_t rn = {.volume = s_volume};
+    (void)esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &rn);
+    /* "Changed" closes the registration; the phone registers again. */
+    s_volume_notify_pending = false;
+    s_volume_unsent = false;
+    s_volume_told = s_volume;
+}
+
+static void a2dp_volume_timer_fired(void *arg)
+{
+    (void)arg;
+    if (s_connected && s_volume_notify_pending && (s_volume_unsent || s_volume_told != s_volume)) {
+        a2dp_tell_volume();
+    }
 }
 
 /* The poll runs only while playing and only for a phone that cannot notify,
@@ -328,6 +377,9 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         if (s_connected) {
             memcpy(s_peer, address, sizeof(s_peer));
             (void)esp_bt_gap_read_remote_name(s_peer);
+            s_streamed = false;
+            (void)esp_timer_stop(s_nudge_timer);
+            (void)esp_timer_start_once(s_nudge_timer, A2DP_NUDGE_US);
         } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
             audio_out_stream(false);
             a2dp_note_playing(false);
@@ -343,6 +395,7 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     }
     case ESP_A2D_AUDIO_STATE_EVT: {
         const bool started = param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED;
+        if (started) s_streamed = true;
         audio_out_stream(started);
         ESP_LOGI(TAG, "audio %s", started ? "started" : "suspended");
         /* The transport state proper comes from AVRCP; this is the stream,
@@ -482,12 +535,15 @@ static void a2dp_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_
     case ESP_AVRC_TG_CONNECTION_STATE_EVT:
         s_volume_notify_pending = false;
         break;
-    case ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT:
-        s_volume = param->set_abs_vol.volume & 0x7FU;
+    case ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT: {
+        const uint8_t asked = param->set_abs_vol.volume & 0x7FU;
+        s_volume = asked;
+        s_volume_told = asked;
         audio_out_set_volume(s_volume);
-        ESP_LOGI(TAG, "phone set volume %u", s_volume);
+        ESP_LOGD(TAG, "phone set volume %u", s_volume);
         if (s_listener.volume != NULL) s_listener.volume(s_volume);
         break;
+    }
     case ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT:
         if (param->reg_ntf.event_id == ESP_AVRC_RN_VOLUME_CHANGE) {
             /* The phone wants to hear about local changes: answer now with
@@ -495,6 +551,9 @@ static void a2dp_tg_callback(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_
             esp_avrc_rn_param_t rn = {.volume = s_volume};
             (void)esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &rn);
             s_volume_notify_pending = true;
+            /* The interim answer carries the current value; a change since
+             * the last "changed" goes out on the timer's next tick, so the
+             * phone is never told twice inside one registration. */
         }
         break;
     case ESP_AVRC_TG_REMOTE_FEATURES_EVT:
@@ -517,6 +576,12 @@ esp_err_t a2dp_sink_start(const a2dp_sink_listener_t *listener)
     ESP_RETURN_ON_ERROR(esp_timer_create(&settle, &s_settle_timer), TAG, "timer");
     const esp_timer_create_args_t poll = {.callback = a2dp_poll_fired, .name = "pos_poll"};
     ESP_RETURN_ON_ERROR(esp_timer_create(&poll, &s_poll_timer), TAG, "poll timer");
+    const esp_timer_create_args_t nudge = {.callback = a2dp_nudge_fired, .name = "nudge"};
+    ESP_RETURN_ON_ERROR(esp_timer_create(&nudge, &s_nudge_timer), TAG, "nudge timer");
+    const esp_timer_create_args_t retell = {.callback = a2dp_volume_timer_fired, .name = "vol_retell"};
+    ESP_RETURN_ON_ERROR(esp_timer_create(&retell, &s_volume_timer), TAG, "volume timer");
+    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_volume_timer, A2DP_VOLUME_RETELL_US), TAG,
+                        "volume timer start");
 
     /* "Just works" pairing: no display, no keyboard, like any speaker. */
     esp_bt_io_cap_t io_capability = ESP_BT_IO_CAP_NONE;
@@ -588,12 +653,15 @@ esp_err_t a2dp_sink_passthrough(jbt_key_t key)
 
 void a2dp_sink_set_volume(uint8_t volume)
 {
-    s_volume = volume > 127U ? 127U : volume;
+    const uint8_t wanted = volume > 127U ? 127U : volume;
+    if (wanted == s_volume) return;
+    s_volume = wanted;
     audio_out_set_volume(s_volume);
-    if (s_connected && s_volume_notify_pending) {
-        esp_avrc_rn_param_t rn = {.volume = s_volume};
-        (void)esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &rn);
-        /* "Changed" closes the registration; the phone registers again. */
-        s_volume_notify_pending = false;
-    }
+    /* Not told at once: a knob turned fast would send a "changed" per click,
+     * and each closes the registration the phone then reopens - clicks in
+     * that window were refused by the stack ("Event id not registered") and
+     * the phone answered the ones that got through with its own SetVolume,
+     * which read as the slider jumping back. The timer tells the phone the
+     * latest value at most once a cycle, on a registration it holds. */
+    s_volume_unsent = s_connected;
 }

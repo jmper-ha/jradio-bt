@@ -32,6 +32,11 @@ static uint8_t s_channels = 2U;
 static bool s_claimed;
 static bool s_streaming;
 static bool s_prefetching = true;
+/* Set on a suspend, acted on by the writer: the ring must only ever be
+ * drained by the task that receives from it. Draining it from the
+ * Bluetooth task while the writer held a chunk left the ring wedged - the
+ * stream restarted, the buffer filled, and nothing reached the DAC. */
+static volatile bool s_flush;
 /* Q15 gain from the 0..127 volume: the square of the fraction, which is
  * roughly how a phone expects its slider to feel - linear would sit loud
  * over most of its travel. */
@@ -50,6 +55,15 @@ static void audio_out_writer_task(void *arg)
 {
     (void)arg;
     while (true) {
+        if (s_flush) {
+            s_flush = false;
+            size_t length = 0U;
+            void *item;
+            while ((item = xRingbufferReceiveUpTo(s_ring, &length, 0, AUDIO_RING_SIZE)) != NULL) {
+                vRingbufferReturnItem(s_ring, item);
+            }
+            s_prefetching = true;
+        }
         if (s_prefetching) {
             /* Wait for the buffer to fill some, then drain steadily. The
              * wait is short so a suspend/resume is not a long silence. */
@@ -201,15 +215,9 @@ esp_err_t audio_out_set_format(uint32_t sample_rate, uint8_t channels)
 void audio_out_stream(bool started)
 {
     s_streaming = started;
-    if (!started && s_ring != NULL) {
-        /* Drain what is queued so the next start does not replay it. */
-        size_t length = 0U;
-        void *item;
-        while ((item = xRingbufferReceiveUpTo(s_ring, &length, 0, AUDIO_RING_SIZE)) != NULL) {
-            vRingbufferReturnItem(s_ring, item);
-        }
-        s_prefetching = true;
-    }
+    /* On a stop, what is queued is dropped so the next start does not
+     * replay it - by the writer, on its own task; see s_flush. */
+    if (!started) s_flush = true;
 }
 
 size_t audio_out_write(const uint8_t *pcm, size_t length)

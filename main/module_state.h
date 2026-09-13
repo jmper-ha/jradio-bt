@@ -34,3 +34,10 @@ void module_state_set_connection(jbt_conn_t connection, const uint8_t *peer, con
 void module_state_set_play(jbt_play_t play);
 void module_state_set_volume(uint8_t volume);
 void module_state_set_codec(jbt_codec_t codec, uint32_t sample_rate);
+
+/* The last phone that connected, kept in NVS so the module can go back to
+ * it after a reboot: an iPhone does not come back to a sink on its own.
+ * False when none is known. */
+bool module_state_last_peer(uint8_t out[6]);
+void module_state_remember_peer(const uint8_t peer[6]);
+void module_state_forget_peer(void);

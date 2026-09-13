@@ -89,6 +89,15 @@ static jbt_result_t enter_mode(jbt_mode_t mode)
             result = JBT_RESULT_FAILED;
         } else {
             a2dp_sink_set_enabled(true);
+            /* Back to the phone that was here last: an iPhone waits to be
+             * called, it does not call - so after a reboot of the module
+             * mid-play the music stayed off until somebody tapped it. */
+            uint8_t peer[6];
+            if (module_state_last_peer(peer)) {
+                ESP_LOGI(TAG, "calling the last phone %02X:%02X:%02X:%02X:%02X:%02X", peer[0],
+                         peer[1], peer[2], peer[3], peer[4], peer[5]);
+                (void)a2dp_sink_connect(peer);
+            }
         }
     }
     module_state_set_mode(mode);
@@ -215,6 +224,11 @@ static void on_frame(const jbt_frame_t *frame, void *context)
     case JBT_MSG_PASSTHROUGH: handle_passthrough(frame); return;
     case JBT_MSG_SET_VOLUME: handle_set_volume(frame); return;
     case JBT_MSG_COVER_GET: handle_cover_get(frame); return;
+    case JBT_MSG_FORGET:
+        module_state_forget_peer();
+        (void)a2dp_sink_disconnect();
+        if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, JBT_RESULT_OK);
+        return;
     case JBT_MSG_ACK: return; /* nothing the module sends asks for one yet */
     default: break;
     }
@@ -235,6 +249,7 @@ static void on_connection(jbt_conn_t state, const uint8_t *address)
     module_state_set_connection(state, state == JBT_CONN_NONE ? NULL : address,
                                 state == JBT_CONN_CONNECTED ? current.peer_name : NULL);
     if (state == JBT_CONN_NONE) module_state_set_play(JBT_PLAY_STOPPED);
+    if (state == JBT_CONN_CONNECTED) module_state_remember_peer(address);
     send_status();
     if (state == JBT_CONN_CONNECTED) send_event(JBT_EVENT_CONNECTED, NULL);
     if (state == JBT_CONN_NONE && current.status.connection == JBT_CONN_CONNECTED) {
