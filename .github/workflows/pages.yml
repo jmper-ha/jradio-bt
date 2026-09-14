@@ -1,0 +1,62 @@
+# The web flasher: on every version tag (and on request) the firmware is
+# built in Espressif's own image of the ESP-IDF this project is pinned to,
+# and the three binaries are published with the page that flashes them from
+# a browser, at https://<owner>.github.io/jradio-bt/. The binaries live in
+# the site rather than in a release: ESP Web Tools fetches them from the
+# page's own origin, and release assets carry no CORS headers.
+name: web flasher
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The app descriptor carries `git describe`, which needs the tags.
+          fetch-depth: 0
+      - name: Build
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          idf.py build
+      - name: Assemble the site
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME}"
+          case "$version" in v*) ;; *) version="$(git describe --tags --always)";; esac
+          mkdir -p site/firmware
+          cp build/bootloader/bootloader.bin build/partition_table/partition-table.bin build/jradio-bt.bin site/firmware/
+          cp docs/index.html site/
+          sed "s/\"version\": \"dev\"/\"version\": \"${version}\"/" docs/manifest.json > site/manifest.json
+          echo "${version}" > site/firmware/VERSION
+          cat site/manifest.json
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jradio-bt — прошивка из браузера</title>
+  <meta name="description" content="Прошивка Bluetooth-модуля jradio-bt для jRadio прямо из браузера, без установки ESP-IDF.">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f7f9; --card: #ffffff; --ink: #1c2430; --muted: #5b6774; --rule: #dde3ea;
+      --accent: #d98a24; --accent-ink: #ffffff; --blue: #2f7fd6;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #101820; --card: #18242e; --ink: #f2f4f6; --muted: #aab6c2; --rule: #2a3946;
+              --accent: #f2a33c; --accent-ink: #101820; --blue: #5aa9ff; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+           font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 1.9rem; margin: 0 0 4px; }
+    h1 small { font-weight: 400; color: var(--muted); font-size: 1rem; margin-left: .5rem; }
+    h2 { font-size: 1.15rem; margin: 32px 0 8px; }
+    p { margin: 8px 0; }
+    .lead { color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 20px 22px; margin: 20px 0; }
+    ol, ul { padding-left: 22px; }
+    li { margin: 6px 0; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em;
+           background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 5px; border-radius: 4px; }
+    table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
+    .flash { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+    .install { font: inherit; font-weight: 600; font-size: 1.05rem; padding: 12px 28px; border: 0; border-radius: 8px;
+               background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+    .install:hover { filter: brightness(1.08); }
+    .note { color: var(--muted); font-size: .92rem; }
+    .warn { border-left: 4px solid var(--accent); padding: 8px 12px; background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 6px; }
+    a { color: var(--blue); }
+    .en { margin-top: 48px; border-top: 1px solid var(--rule); padding-top: 24px; color: var(--muted); }
+    .en h2 { color: var(--ink); }
+  </style>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</head>
+<body>
+<main>
+  <h1>jradio-bt <small id="version"></small></h1>
+  <p class="lead">Bluetooth-модуль для <a href="https://github.com/jmper-ha/jradio">jRadio</a>:
+    приём музыки с телефона и передача на Bluetooth-колонку. Прошивается прямо отсюда,
+    из браузера — ESP-IDF и VS Code не нужны.</p>
+
+  <div class="card">
+    <h2 style="margin-top:0">Прошить модуль</h2>
+    <ol>
+      <li>Подключите модуль (плату ESP32 WROOM-32) к компьютеру USB-кабелем — своим, не через jRadio.
+        Кабель должен быть с данными, а не только зарядный.</li>
+      <li>Нажмите кнопку и выберите порт модуля в окне браузера.</li>
+      <li>Согласитесь стереть память при первой установке. Через минуту модуль перезагрузится с новой прошивкой.</li>
+    </ol>
+    <div class="flash">
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate" class="install" type="button">Прошить</button>
+        <span slot="unsupported" class="warn">Этот браузер не умеет работать с последовательным портом.
+          Откройте страницу в <b>Chrome</b> или <b>Edge</b> на компьютере — с телефона, из Firefox и Safari прошить нельзя.</span>
+        <span slot="not-allowed" class="warn">Страница должна быть открыта по HTTPS.</span>
+      </esp-web-install-button>
+      <span class="note">Chrome или Edge, Windows / macOS / Linux.</span>
+    </div>
+  </div>
+
+  <h2>Если порт не появляется</h2>
+  <ul>
+    <li><b>Драйвер USB-UART.</b> На большинстве плат стоит CP2102 или CH340; Windows иногда не находит драйвер сама:
+      <a href="https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers">CP210x</a>,
+      <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">CH340/CH341</a>.
+      В диспетчере устройств плата должна значиться как COM-порт.</li>
+    <li><b>Плата не входит в режим прошивки.</b> Зажмите кнопку <b>BOOT</b> (иногда подписана IO0), коротко нажмите
+      <b>RST</b>/<b>EN</b>, отпустите BOOT — и нажмите «Прошить» ещё раз.</li>
+    <li><b>Порт занят.</b> Закройте монитор порта, Arduino IDE, VS Code с открытым терминалом ESP-IDF.</li>
+    <li>На Linux пользователь должен состоять в группе <code>dialout</code> (или <code>uucp</code>).</li>
+  </ul>
+
+  <h2>Подключение к jRadio</h2>
+  <p>После прошивки отключите модуль от компьютера и соедините с платой jRadio:</p>
+  <table>
+    <thead><tr><th>Модуль (WROOM-32)</th><th>jRadio (ESP32-S3)</th><th>Что</th></tr></thead>
+    <tbody>
+      <tr><td>GPIO 17 (TX)</td><td>GPIO 14</td><td>UART 921600</td></tr>
+      <tr><td>GPIO 16 (RX)</td><td>GPIO 13</td><td></td></tr>
+      <tr><td>GPIO 26</td><td>GPIO 18 (BCLK)</td><td>общая шина I2S, через 33–47 Ом с каждой стороны</td></tr>
+      <tr><td>GPIO 25</td><td>GPIO 17 (LRCK)</td><td></td></tr>
+      <tr><td>GPIO 22</td><td>GPIO 16 (DOUT)</td><td>тот же провод идёт и в DIN ЦАПа</td></tr>
+      <tr><td>GND</td><td>GND</td><td></td></tr>
+      <tr><td>3V3</td><td>3V3</td><td>модулю до 200 мА в пиках</td></tr>
+    </tbody>
+  </table>
+  <p class="note">В прошивке jRadio модуль включается строками <code>BLUETOOTH</code>, <code>BT_UART_TX_GPIO</code>,
+    <code>BT_UART_RX_GPIO</code> в <code>board_options.h</code>. Антенны двух плат лучше разнести: рядом они
+    мешают друг другу в те секунды, когда модуль ищет колонку. Подробности — в
+    <a href="https://github.com/jmper-ha/jradio/blob/main/doc/hardware.md#bluetooth-модуль-jradio-bt">описании железа jRadio</a>
+    и в <a href="https://github.com/jmper-ha/jradio-bt">README модуля</a>.</p>
+
+  <h2>Что внутри</h2>
+  <p class="note">Три файла с этой же страницы: загрузчик, таблица разделов и приложение
+    (<a href="firmware/jradio-bt.bin">jradio-bt.bin</a>). Их же можно залить и вручную:
+    <code>esptool.py --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partition-table.bin 0x10000 jradio-bt.bin</code>.
+    Собирается автоматически из тега репозитория в ESP-IDF 5.5.5; номер версии вверху страницы — этот тег.</p>
+
+  <section class="en" lang="en">
+    <h2>In English</h2>
+    <p>The Bluetooth module for jRadio, flashed from the browser: plug the ESP32 WROOM-32 board into the computer over
+      its own USB, press <b>Прошить</b> ("Flash"), pick the port, allow the erase on a first install. Chrome or Edge
+      on a computer only - Web Serial is not available on phones, in Firefox or Safari. If no port shows up, install
+      the CP210x or CH340 driver, or hold <b>BOOT</b> while tapping <b>RST</b> and try again. Wiring to jRadio is in
+      the table above (module pin, S3 pin); details in the
+      <a href="https://github.com/jmper-ha/jradio-bt/blob/main/README.en.md">README</a>.</p>
+  </section>
+</main>
+<script>
+  /* The version comes from the manifest the flasher reads, so the page and
+     the binaries can never name different builds. */
+  fetch('manifest.json', {cache: 'no-store'})
+    .then((r) => r.json())
+    .then((m) => { document.getElementById('version').textContent = m.version || ''; })
+    .catch(() => {});
+</script>
+</body>
+</html>

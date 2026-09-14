@@ -1,0 +1,15 @@
+{
+  "name": "jradio-bt",
+  "version": "dev",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/jradio-bt.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}

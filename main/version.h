@@ -6,4 +6,4 @@
  * exact commit is in the app descriptor (git describe), printed at boot. */
 #define JBT_FW_MAJOR 1U
 #define JBT_FW_MINOR 0U
-#define JBT_FW_BUILD 0U
+#define JBT_FW_BUILD 1U

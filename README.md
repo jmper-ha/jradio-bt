@@ -46,8 +46,14 @@ jRadio, и слушается его по UART.
 
 ## Прошивка
 
-Одна сборка на все платы — экрана у модуля нет. Нужен ESP-IDF 5.5.x, тот же,
-что у jRadio; как его поставить — в
+**Из браузера, без ESP-IDF:** [jmper-ha.github.io/jradio-bt](https://jmper-ha.github.io/jradio-bt/) —
+подключить модуль по USB, нажать «Прошить», выбрать порт. Chrome или Edge на
+компьютере. Страница собирается автоматически из тега `v*` (`.github/workflows/pages.yml`):
+прошивка компилируется в образе ESP-IDF 5.5.5, три `.bin` и манифест для
+ESP Web Tools публикуются на GitHub Pages.
+
+**Из исходников:** одна сборка на все платы — экрана у модуля нет. Нужен ESP-IDF
+5.5.x, тот же, что у jRadio; как его поставить — в
 [инструкции jRadio](https://github.com/jmper-ha/jradio/blob/main/doc/toolchain.md).
 
 В VS Code с расширением ESP-IDF: открыть папку, Terminal → Run Task… →
@@ -63,9 +69,6 @@ source <esp-idf>/export.sh
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor    # порт USB-консоли модуля
 ```
-
-Готовые `.bin` и прошивка из браузера — следующий шаг, вместе с такой же
-страницей для основной прошивки.
 
 Версия — в `main/version.h` и в теге git того же номера; точный коммит модуль
 печатает при старте (`jradio-bt 1.0.0 (v1.0.0), protocol 1`), а хост показывает

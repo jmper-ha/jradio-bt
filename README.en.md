@@ -47,8 +47,15 @@ stays off its channel.
 
 ## Flashing
 
-One build for every board - the module has no screen. ESP-IDF 5.5.x, the
-same as jRadio's; how to install it is in
+**From the browser, no ESP-IDF:** [jmper-ha.github.io/jradio-bt](https://jmper-ha.github.io/jradio-bt/) -
+plug the module in over USB, press the button, pick the port. Chrome or Edge on
+a computer. The page is built automatically from a `v*` tag
+(`.github/workflows/pages.yml`): the firmware is compiled in the ESP-IDF 5.5.5
+image, and the three `.bin` files with an ESP Web Tools manifest go to GitHub
+Pages.
+
+**From source:** one build for every board - the module has no screen.
+ESP-IDF 5.5.x, the same as jRadio's; how to install it is in
 [jRadio's guide](https://github.com/jmper-ha/jradio/blob/main/doc/toolchain.en.md).
 
 In VS Code with the ESP-IDF extension: open the folder, Terminal -> Run Task...
@@ -65,9 +72,6 @@ source <esp-idf>/export.sh
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor    # the module's USB console port
 ```
-
-Ready-made `.bin` files and flashing from the browser are the next step,
-together with the same page for the main firmware.
 
 The version is in `main/version.h` and in the git tag of the same number; the
 exact commit is printed at boot (`jradio-bt 1.0.0 (v1.0.0), protocol 1`), and
