@@ -82,22 +82,23 @@
   </ul>
 
   <h2>Подключение к jRadio</h2>
-  <p>После прошивки отключите модуль от компьютера и соедините с платой jRadio:</p>
+  <p>После прошивки отключите модуль от компьютера и соедините с платой jRadio. Ножки на стороне S3 —
+    те, что названы в вашем <code>board_options.h</code>:</p>
   <table>
     <thead><tr><th>Модуль (WROOM-32)</th><th>jRadio (ESP32-S3)</th><th>Что</th></tr></thead>
     <tbody>
-      <tr><td>GPIO 17 (TX)</td><td>GPIO 14</td><td>UART 921600</td></tr>
-      <tr><td>GPIO 16 (RX)</td><td>GPIO 13</td><td></td></tr>
-      <tr><td>GPIO 26</td><td>GPIO 18 (BCLK)</td><td>общая шина I2S, через 33–47 Ом с каждой стороны</td></tr>
-      <tr><td>GPIO 25</td><td>GPIO 17 (LRCK)</td><td></td></tr>
-      <tr><td>GPIO 22</td><td>GPIO 16 (DOUT)</td><td>тот же провод идёт и в DIN ЦАПа</td></tr>
+      <tr><td>GPIO 17 (TX)</td><td><code>BT_UART_RX_GPIO</code></td><td>UART 921600</td></tr>
+      <tr><td>GPIO 16 (RX)</td><td><code>BT_UART_TX_GPIO</code></td><td></td></tr>
+      <tr><td>GPIO 26</td><td><code>I2S_BCLK_GPIO</code></td><td>общая шина I2S, через 33–47 Ом с каждой стороны</td></tr>
+      <tr><td>GPIO 25</td><td><code>I2S_LRCK_GPIO</code></td><td></td></tr>
+      <tr><td>GPIO 22</td><td><code>I2S_DOUT_GPIO</code></td><td>тот же провод идёт и в DIN ЦАПа</td></tr>
       <tr><td>GND</td><td>GND</td><td></td></tr>
       <tr><td>3V3</td><td>3V3</td><td>модулю до 200 мА в пиках</td></tr>
     </tbody>
   </table>
-  <p class="note">В прошивке jRadio модуль включается строками <code>BLUETOOTH</code>, <code>BT_UART_TX_GPIO</code>,
-    <code>BT_UART_RX_GPIO</code> в <code>board_options.h</code>. Антенны двух плат лучше разнести: рядом они
-    мешают друг другу в те секунды, когда модуль ищет колонку. Подробности — в
+  <p class="note">В прошивке jRadio модуль включается строками <code>BLUETOOTH</code>, <code>BT_UART_TX_GPIO</code>
+    и <code>BT_UART_RX_GPIO</code> в <code>board_options.h</code> (TX одной платы идёт в RX другой). Антенны
+    двух плат лучше разнести: рядом они мешают друг другу в те секунды, когда модуль ищет колонку. Подробности — в
     <a href="https://github.com/jmper-ha/jradio/blob/main/doc/hardware.md#bluetooth-модуль-jradio-bt">описании железа jRadio</a>
     и в <a href="https://github.com/jmper-ha/jradio-bt">README модуля</a>.</p>
 
@@ -113,7 +114,8 @@
       its own USB, press <b>Прошить</b> ("Flash"), pick the port, allow the erase on a first install. Chrome or Edge
       on a computer only - Web Serial is not available on phones, in Firefox or Safari. If no port shows up, install
       the CP210x or CH340 driver, or hold <b>BOOT</b> while tapping <b>RST</b> and try again. Wiring to jRadio is in
-      the table above (module pin, S3 pin); details in the
+      the table above (module pin, then the macro naming the S3 pin in your <code>board_options.h</code>);
+      details in the
       <a href="https://github.com/jmper-ha/jradio-bt/blob/main/README.en.md">README</a>.</p>
   </section>
 </main>
