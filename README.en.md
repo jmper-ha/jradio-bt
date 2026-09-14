@@ -49,10 +49,10 @@ stays off its channel.
 
 **From the browser, no ESP-IDF:** [jmper-ha.github.io/jradio-bt](https://jmper-ha.github.io/jradio-bt/) -
 plug the module in over USB, press the button, pick the port. Chrome or Edge on
-a computer. The page is built automatically from a `v*` tag
-(`.github/workflows/pages.yml`): the firmware is compiled in the ESP-IDF 5.5.5
-image, and the three `.bin` files with an ESP Web Tools manifest go to GitHub
-Pages.
+a computer. The page is built automatically from a `v*` tag and from every push to
+`main` (`.github/workflows/pages.yml`): the firmware is compiled in the ESP-IDF
+5.5.5 image, and the three `.bin` files with their manifest go to GitHub Pages;
+esptool-js in the browser does the flashing.
 
 **From source:** one build for every board - the module has no screen.
 ESP-IDF 5.5.x, the same as jRadio's; how to install it is in

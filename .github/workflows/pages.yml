@@ -9,6 +9,9 @@ name: web flasher
 on:
   push:
     tags: ['v*']
+    # The page itself changes more often than the firmware; a push to main
+    # republishes it with whatever `git describe` names the build.
+    branches: ['main']
   workflow_dispatch:
 
 permissions:

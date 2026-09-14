@@ -42,7 +42,6 @@
     .en { margin-top: 48px; border-top: 1px solid var(--rule); padding-top: 24px; color: var(--muted); }
     .en h2 { color: var(--ink); }
   </style>
-  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 </head>
 <body>
 <main>
@@ -57,17 +56,17 @@
       <li>Подключите модуль (плату ESP32 WROOM-32) к компьютеру USB-кабелем — своим, не через jRadio.
         Кабель должен быть с данными, а не только зарядный.</li>
       <li>Нажмите кнопку и выберите порт модуля в окне браузера.</li>
-      <li>Согласитесь стереть память при первой установке. Через минуту модуль перезагрузится с новой прошивкой.</li>
+      <li>При первой установке отметьте «стереть всю память». Через минуту модуль перезагрузится с новой прошивкой.</li>
     </ol>
     <div class="flash">
-      <esp-web-install-button manifest="manifest.json">
-        <button slot="activate" class="install" type="button">Прошить</button>
-        <span slot="unsupported" class="warn">Этот браузер не умеет работать с последовательным портом.
-          Откройте страницу в <b>Chrome</b> или <b>Edge</b> на компьютере — с телефона, из Firefox и Safari прошить нельзя.</span>
-        <span slot="not-allowed" class="warn">Страница должна быть открыта по HTTPS.</span>
-      </esp-web-install-button>
-      <span class="note">Chrome или Edge, Windows / macOS / Linux.</span>
+      <button id="install" class="install" type="button">Прошить</button>
+      <label class="note"><input id="erase" type="checkbox"> стереть всю память (первая установка или чужая прошивка)</label>
     </div>
+    <p id="unsupported" class="warn" hidden>Этот браузер не умеет работать с последовательным портом.
+      Откройте страницу в <b>Chrome</b> или <b>Edge</b> на компьютере — с телефона, из Firefox и Safari прошить нельзя.</p>
+    <p id="status" class="note" aria-live="polite"></p>
+    <progress id="progress" max="100" value="0" hidden style="width:100%"></progress>
+    <details id="log-box" hidden><summary class="note">Журнал</summary><pre id="log" class="note" style="white-space:pre-wrap;margin:6px 0 0"></pre></details>
   </div>
 
   <h2>Если порт не появляется</h2>
@@ -118,13 +117,100 @@
       <a href="https://github.com/jmper-ha/jradio-bt/blob/main/README.en.md">README</a>.</p>
   </section>
 </main>
-<script>
+<script type="module">
+  /* esptool-js straight, not ESP Web Tools: that one first probes the
+     board for Improv (ESPHome's Wi-Fi setup over serial), and on Linux with
+     a CP2102 the probe ends in "the device has been lost" before the
+     flasher ever runs. The module has no Improv to offer anyway. */
+  import {ESPLoader, Transport} from 'https://unpkg.com/esptool-js@0.6.1/bundle.js';
+
+  const $ = (id) => document.getElementById(id);
+  const button = $('install'), status = $('status'), progress = $('progress'), logBox = $('log-box'), log = $('log');
+  let manifest = null;
+
   /* The version comes from the manifest the flasher reads, so the page and
      the binaries can never name different builds. */
   fetch('manifest.json', {cache: 'no-store'})
     .then((r) => r.json())
-    .then((m) => { document.getElementById('version').textContent = m.version || ''; })
-    .catch(() => {});
+    .then((m) => { manifest = m; $('version').textContent = m.version || ''; })
+    .catch(() => { status.textContent = 'Не удалось прочитать manifest.json'; });
+
+  if (!('serial' in navigator)) {
+    $('unsupported').hidden = false;
+    button.disabled = true;
+  }
+
+  const say = (text) => { status.textContent = text; };
+  const line = (text) => { log.textContent += text + '\n'; logBox.hidden = false; };
+  const terminal = {
+    clean() { log.textContent = ''; },
+    writeLine(text) { line(text); },
+    write(text) { log.textContent += text; },
+  };
+
+  async function flash() {
+    if (!manifest) { say('Манифест ещё не загружен, попробуйте через секунду.'); return; }
+    const build = manifest.builds[0];
+    button.disabled = true;
+    progress.hidden = true;
+    let port = null, transport = null;
+    try {
+      say('Выберите порт модуля в окне браузера…');
+      port = await navigator.serial.requestPort();
+      transport = new Transport(port, false);
+      const loader = new ESPLoader({transport, baudrate: 460800, romBaudrate: 115200, terminal});
+      say('Подключаемся к модулю… Если не выходит, зажмите BOOT.');
+      const chip = await loader.main();
+      line('Чип: ' + chip);
+      if (!/^ESP32(?![-_]?[SCHP])/.test(chip)) {
+        throw new Error('Это не ESP32 WROOM-32, а ' + chip + ' — прошивка модуля для него не подходит.');
+      }
+      say('Загружаем файлы прошивки…');
+      const fileArray = [];
+      for (const part of build.parts) {
+        const response = await fetch(part.path, {cache: 'no-store'});
+        if (!response.ok) throw new Error('Нет файла ' + part.path);
+        /* Bytes, not a binary string: esptool-js 0.6 compresses the data
+           with pako, which UTF-8-encodes a string - every byte over 0x7F
+           became two, the stream inflated past the file's length, and the
+           stub refused block 27 of 34 with "too much data". */
+        fileArray.push({data: new Uint8Array(await response.arrayBuffer()), address: part.offset});
+      }
+      const erase = $('erase').checked;
+      say(erase ? 'Стираем память и записываем прошивку…' : 'Записываем прошивку…');
+      progress.hidden = false;
+      progress.value = 0;
+      const total = fileArray.reduce((sum, f) => sum + f.data.length, 0);
+      const done = fileArray.map(() => 0);
+      await loader.writeFlash({
+        fileArray, flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep',
+        eraseAll: erase, compress: true,
+        reportProgress(index, written, length) {
+          done[index] = Math.min(written, length);
+          progress.value = Math.round(done.reduce((a, b) => a + b, 0) * 100 / total);
+        },
+      });
+      progress.value = 100;
+      await loader.after('hard_reset');
+      say('Готово: модуль перезагружен с прошивкой ' + (manifest.version || '') + '. Отключите его от компьютера и подключите к jRadio.');
+    } catch (error) {
+      const text = String(error && error.message ? error.message : error);
+      line('Ошибка: ' + text);
+      if (/Failed to connect|timed out|Timed out|sync/i.test(text)) {
+        say('Модуль не отвечает. Зажмите BOOT, нажмите RST, отпустите BOOT — и «Прошить» ещё раз.');
+      } else if (/NotFoundError|No port selected/i.test(text)) {
+        say('Порт не выбран.');
+      } else if (/lost|busy|not ready|NetworkError|Failed to open/i.test(text)) {
+        say('Порт занят или пропал: закройте другие вкладки и программы, работающие с ним, переподключите кабель и попробуйте снова.');
+      } else {
+        say('Не получилось: ' + text);
+      }
+    } finally {
+      try { if (transport) await transport.disconnect(); } catch (_) {}
+      button.disabled = false;
+    }
+  }
+  button.addEventListener('click', flash);
 </script>
 </body>
 </html>
