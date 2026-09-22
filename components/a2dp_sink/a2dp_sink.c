@@ -34,6 +34,11 @@ static const char *TAG = "a2dp_sink";
 #define A2DP_METADATA_SETTLE_US (150 * 1000)
 /* Position notifications, in seconds, when the phone supports them. */
 #define A2DP_POSITION_INTERVAL_S 1U
+/* How often the transport state is asked for while a phone is connected but
+ * not believed to be playing: slower than the position, because nothing is
+ * moving, and fast enough that a screen showing the wrong thing corrects
+ * itself before anybody reaches for a button. */
+#define A2DP_STATUS_INTERVAL_S 2U
 
 static a2dp_sink_listener_t s_listener;
 static bool s_enabled;
@@ -157,17 +162,24 @@ static void a2dp_volume_timer_fired(void *arg)
     }
 }
 
-/* The poll runs only while playing and only for a phone that cannot notify,
- * so a phone that can is not asked twice. */
+/* The poll keeps two things fresh, and used to run only while this module
+ * already believed the phone was playing: the position, which only matters
+ * then, and the transport state, which matters most when the belief is
+ * wrong. A phone whose play status never arrives left that belief stuck at
+ * "paused" with music coming out of the DAC. So it runs whenever a phone is
+ * connected - one AVRCP command a second over a link that carries a song,
+ * and the same rate the position always used - while the fast beat is still
+ * reserved for the phone that cannot notify its position. */
 static void a2dp_note_playing(bool playing)
 {
     s_playing = playing;
     const bool notifies = esp_avrc_rn_evt_bit_mask_operation(
         ESP_AVRC_BIT_MASK_OP_TEST, &s_peer_capabilities, ESP_AVRC_RN_PLAY_POS_CHANGED);
     (void)esp_timer_stop(s_poll_timer);
-    if (playing && !notifies) {
-        (void)esp_timer_start_periodic(s_poll_timer, (uint64_t)A2DP_POSITION_INTERVAL_S * 1000000ULL);
-    }
+    if (!s_connected) return;
+    const uint32_t seconds = playing && !notifies ? A2DP_POSITION_INTERVAL_S
+                                                  : A2DP_STATUS_INTERVAL_S;
+    (void)esp_timer_start_periodic(s_poll_timer, (uint64_t)seconds * 1000000ULL);
 }
 
 static void a2dp_request_metadata(void)
@@ -394,6 +406,9 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             s_streamed = false;
             (void)esp_timer_stop(s_nudge_timer);
             (void)esp_timer_start_once(s_nudge_timer, A2DP_NUDGE_US);
+            /* The poll wants to run from the connection, not from the first
+             * thing the phone happens to say. */
+            a2dp_note_playing(false);
         } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
             audio_out_stream(false);
             a2dp_note_playing(false);
@@ -412,9 +427,17 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         if (started) s_streamed = true;
         audio_out_stream(started);
         ESP_LOGI(TAG, "audio %s", started ? "started" : "suspended");
-        /* The transport state proper comes from AVRCP; this is the stream,
-         * which a phone suspends a moment after pausing. Reported as play
-         * state only when AVRCP says nothing - covered in the notification. */
+        /* And this is the transport state, reported as such. The comment here
+         * used to claim AVRCP covered it - it does not: AVRCP tells us only
+         * when it notifies, and a phone that starts playing without a
+         * PLAY_STATUS_CHANGE left the board showing a pause icon over music
+         * that was playing, with nothing able to clear it (a play key sent to
+         * an already-playing phone changes nothing). A stream that is running
+         * is sound leaving the DAC, which is what the state means; AVRCP
+         * still corrects the detail, and is asked to right now. */
+        a2dp_note_playing(started);
+        if (s_listener.play != NULL) s_listener.play(started ? JBT_PLAY_PLAYING : JBT_PLAY_PAUSED);
+        if (s_connected) (void)esp_avrc_ct_send_get_play_status_cmd(a2dp_next_transaction());
         break;
     }
     case ESP_A2D_AUDIO_CFG_EVT: {
