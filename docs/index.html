@@ -57,6 +57,9 @@
         Кабель должен быть с данными, а не только зарядный.</li>
       <li>Нажмите кнопку и выберите порт модуля в окне браузера.</li>
       <li>При первой установке отметьте «стереть всю память». Через минуту модуль перезагрузится с новой прошивкой.</li>
+      <li><b>При обновлении</b> модуля, который уже работал с jRadio, галочку не ставьте: стирание удалит сопряжённые
+        телефоны и колонку, и их придётся связывать заново. Не уверены — не ставьте: обновление встаёт и без стирания.
+        Стирать нужно, только если на плате была чужая прошивка или модуль после прошивки не заработал.</li>
     </ol>
     <div class="flash">
       <button id="install" class="install" type="button">Прошить</button>
@@ -111,7 +114,9 @@
   <section class="en" lang="en">
     <h2>In English</h2>
     <p>The Bluetooth module for jRadio, flashed from the browser: plug the ESP32 WROOM-32 board into the computer over
-      its own USB, press <b>Прошить</b> ("Flash"), pick the port, allow the erase on a first install. Chrome or Edge
+      its own USB, press <b>Прошить</b> ("Flash"), pick the port, allow the erase on a first install. When updating a module that
+      already works with jRadio, leave the erase off - it forgets the paired phones and speaker; erase only after
+      someone else's firmware, or if the module does not start after flashing. Chrome or Edge
       on a computer only - Web Serial is not available on phones, in Firefox or Safari. If no port shows up, install
       the CP210x or CH340 driver, or hold <b>BOOT</b> while tapping <b>RST</b> and try again. Wiring to jRadio is in
       the table above (module pin, then the macro naming the S3 pin in your <code>board_options.h</code>);
