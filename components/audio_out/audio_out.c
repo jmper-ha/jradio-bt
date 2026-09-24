@@ -1,5 +1,6 @@
 #include "audio_out.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -42,6 +43,74 @@ static volatile bool s_flush;
  * over most of its travel. */
 static volatile int32_t s_gain_q15 = 32767;
 
+/* The level the host's meter reads while a phone plays: while the phone has
+ * the bus no PCM passes the host, so the module measures what it clocks out
+ * and the host fetches it (see JBT_MSG_LEVEL). RMS of each chunk - 240 frames,
+ * about the 256-frame window the host uses for its own - taken before the
+ * volume, as the host's meter is, and kept at the loudest until taken. */
+static atomic_uint s_level_left;
+static atomic_uint s_level_right;
+static atomic_bool s_level_fresh;
+
+static uint32_t audio_out_isqrt(uint64_t value)
+{
+    uint64_t root = 0U;
+    uint64_t bit = 1ULL << 62;
+    while (bit > value) bit >>= 2;
+    while (bit != 0U) {
+        if (value >= root + bit) {
+            value -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    return (uint32_t)root;
+}
+
+static void audio_out_level_keep(atomic_uint *slot, uint32_t value)
+{
+    unsigned int previous = atomic_load_explicit(slot, memory_order_relaxed);
+    while (value > previous &&
+           !atomic_compare_exchange_weak_explicit(slot, &previous, value, memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+    }
+}
+
+static void audio_out_measure(const int16_t *samples, size_t count)
+{
+    if (count == 0U) return;
+    uint64_t left = 0U;
+    uint64_t right = 0U;
+    size_t frames = 0U;
+    if (s_channels == 1U) {
+        for (size_t i = 0; i < count; ++i) left += (uint64_t)((int32_t)samples[i] * samples[i]);
+        right = left;
+        frames = count;
+    } else {
+        for (size_t i = 0; i + 1U < count; i += 2U) {
+            left += (uint64_t)((int32_t)samples[i] * samples[i]);
+            right += (uint64_t)((int32_t)samples[i + 1U] * samples[i + 1U]);
+            ++frames;
+        }
+    }
+    if (frames == 0U) return;
+    audio_out_level_keep(&s_level_left, audio_out_isqrt(left / frames));
+    audio_out_level_keep(&s_level_right, audio_out_isqrt(right / frames));
+    atomic_store_explicit(&s_level_fresh, true, memory_order_relaxed);
+}
+
+bool audio_out_level_take(uint16_t *left, uint16_t *right)
+{
+    const bool fresh = atomic_exchange_explicit(&s_level_fresh, false, memory_order_relaxed);
+    const unsigned int l = atomic_exchange_explicit(&s_level_left, 0U, memory_order_relaxed);
+    const unsigned int r = atomic_exchange_explicit(&s_level_right, 0U, memory_order_relaxed);
+    if (left != NULL) *left = (uint16_t)(l > 32768U ? 32768U : l);
+    if (right != NULL) *right = (uint16_t)(r > 32768U ? 32768U : r);
+    return fresh;
+}
+
 static void audio_out_apply_gain(int16_t *samples, size_t count)
 {
     const int32_t gain = s_gain_q15;
@@ -81,6 +150,8 @@ static void audio_out_writer_task(void *arg)
             s_prefetching = true;
             continue;
         }
+        /* Measured only when it is going to the DAC, and before the gain. */
+        if (s_claimed && s_streaming) audio_out_measure((const int16_t *)chunk, length / 2U);
         audio_out_apply_gain((int16_t *)chunk, length / 2U);
         if (s_claimed && s_streaming) {
             size_t written = 0U;

@@ -484,6 +484,30 @@ static void on_position(uint32_t position_ms)
     (void)jbt_link_send(JBT_MSG_POSITION, 0U, payload, writer.length, NULL);
 }
 
+/* The host's level meter, while a phone plays: the audio goes from here
+ * straight to the DAC, so the host has nothing to measure. Twenty readings a
+ * second - its meter smooths over 90 ms of attack and 340 of release, so more
+ * would not show - and none at all while nothing plays. A task of its own
+ * rather than the audio writer, which must never wait on the UART. */
+#define LEVEL_PERIOD_MS 50U
+
+static void level_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(LEVEL_PERIOD_MS));
+        uint16_t left;
+        uint16_t right;
+        if (!audio_out_level_take(&left, &right)) continue;
+        uint8_t payload[4];
+        jbt_writer_t writer;
+        jbt_writer_init(&writer, payload, sizeof(payload));
+        jbt_put_u16(&writer, left);
+        jbt_put_u16(&writer, right);
+        (void)jbt_link_send(JBT_MSG_LEVEL, 0U, payload, writer.length, NULL);
+    }
+}
+
 static void on_cover(uint32_t size, jbt_image_t kind, uint32_t hash)
 {
     /* Width and height are left at zero: the host decodes the picture and
@@ -614,6 +638,7 @@ void app_main(void)
      * asked for, and which of the two roles is wanted is the host's call. */
     audio_out_release();
     if (xTaskCreate(mode_worker, "mode", 4096, NULL, 10, &s_mode_worker) != pdPASS) abort();
+    if (xTaskCreate(level_task, "level", 2560, NULL, 5, NULL) != pdPASS) abort();
 
     send_event(JBT_EVENT_BOOTED, state.name);
     send_status();

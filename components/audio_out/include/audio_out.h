@@ -45,3 +45,8 @@ size_t audio_out_write(const uint8_t *pcm, size_t length);
 
 /* 0..127, the AVRCP scale; applied to the samples on their way out. */
 void audio_out_set_volume(uint8_t volume);
+
+/* RMS per channel (0..32768) of what was clocked to the DAC since the previous
+ * call, before the volume; false when nothing was played since. For the
+ * host's level meter, sent as JBT_MSG_LEVEL. */
+bool audio_out_level_take(uint16_t *left, uint16_t *right);
