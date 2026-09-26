@@ -31,7 +31,6 @@ how to wire it, in the [hardware notes](https://github.com/jmper-ha/jradio/blob/
 | GPIO 25 | GPIO 17 (LRCK) | |
 | GPIO 22 | GPIO 16 (DOUT) | the same wire goes on to the DAC's DIN |
 | GND | GND | |
-| 3V3 | 3V3 | up to 200 mA peaks for the module |
 
 Pins are changed in `idf.py menuconfig` -> **jradio-bt**. The module never
 takes the bus on its own: its three I2S pins are inputs until the host sends
