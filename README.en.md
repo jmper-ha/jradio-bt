@@ -32,6 +32,12 @@ how to wire it, in the [hardware notes](https://github.com/jmper-ha/jradio/blob/
 | GPIO 22 | GPIO 16 (DOUT) | the same wire goes on to the DAC's DIN |
 | GND | GND | |
 
+**On a WROVER module** pins 16 and 17 belong to the PSRAM, so the UART to
+jRadio moves: the module's TX is GPIO 32, its RX GPIO 33 (wired to the host the
+same way, TX to RX). The I2S bus is the same. The flasher page has a
+WROOM/WROVER switch for it; from source, build with `sdkconfig.wrover` - see
+below.
+
 Pins are changed in `idf.py menuconfig` -> **jradio-bt**. The module never
 takes the bus on its own: its three I2S pins are inputs until the host sends
 `SET_MODE sink`, and the host sends that only after letting go of its own. When
@@ -47,13 +53,15 @@ stays off its channel.
 ## Flashing
 
 **From the browser, no ESP-IDF:** [jmper-ha.github.io/jradio-bt](https://jmper-ha.github.io/jradio-bt/) -
-plug the module in over USB, press the button, pick the port. Chrome or Edge on
-a computer. The page is built automatically from a `v*` tag and from every push to
-`main` (`.github/workflows/pages.yml`): the firmware is compiled in the ESP-IDF
-5.5.5 image, and the three `.bin` files with their manifest go to GitHub Pages;
+pick the module (WROOM or WROVER), plug it in over USB, press the button, pick
+the port. Chrome or Edge on a computer; the page is in Russian and English. The
+page is built automatically from a `v*` tag and from every push to `main`
+(`.github/workflows/pages.yml`): both firmwares are compiled in the ESP-IDF
+5.5.5 image, and their `.bin` files with the manifest go to GitHub Pages;
 esptool-js in the browser does the flashing.
 
-**From source:** one build for every board - the module has no screen.
+**From source:** one build for every WROOM board and one for the WROVER - the
+module has no screen.
 ESP-IDF 5.5.x, the same as jRadio's; how to install it is in
 [jRadio's guide](https://github.com/jmper-ha/jradio/blob/main/doc/toolchain.en.md).
 
@@ -70,6 +78,15 @@ From a terminal:
 source <esp-idf>/export.sh
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor    # the module's USB console port
+```
+
+For the WROVER, a build directory of its own, with `sdkconfig.wrover` over the
+defaults moving the UART to 32/33:
+
+```bash
+idf.py -B build_wrover -D SDKCONFIG=build_wrover/sdkconfig \
+       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.wrover" build
+idf.py -B build_wrover -p /dev/ttyUSB0 flash monitor
 ```
 
 The version is in `main/version.h` and in the git tag of the same number; the

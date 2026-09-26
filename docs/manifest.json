@@ -4,11 +4,21 @@
   "new_install_prompt_erase": true,
   "builds": [
     {
+      "module": "wroom",
       "chipFamily": "ESP32",
       "parts": [
-        { "path": "firmware/bootloader.bin", "offset": 4096 },
-        { "path": "firmware/partition-table.bin", "offset": 32768 },
-        { "path": "firmware/jradio-bt.bin", "offset": 65536 }
+        { "path": "firmware/wroom/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/wroom/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/wroom/jradio-bt.bin", "offset": 65536 }
+      ]
+    },
+    {
+      "module": "wrover",
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/wrover/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/wrover/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/wrover/jradio-bt.bin", "offset": 65536 }
       ]
     }
   ]

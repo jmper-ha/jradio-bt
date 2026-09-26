@@ -32,6 +32,11 @@ jRadio, и слушается его по UART.
 | GPIO 22 | GPIO 16 (DOUT) | тот же провод идёт и в DIN ЦАПа |
 | GND | GND | |
 
+**На модуле WROVER** ножки 16 и 17 заняты памятью PSRAM, поэтому UART к jRadio
+переезжает: TX модуля — GPIO 32, RX — GPIO 33 (к хосту идут так же, TX в RX).
+Шина I2S та же. На странице прошивки для этого есть переключатель WROOM/WROVER;
+сборка из исходников — с `sdkconfig.wrover`, см. ниже.
+
 Пины меняются в `idf.py menuconfig` → **jradio-bt**. Модуль никогда не берёт
 шину сам: три ножки I2S — входы, пока хост не пришлёт `SET_MODE sink`, а хост
 шлёт его, уже отпустив свои. В режиме передачи ведущий — S3, модуль только
@@ -46,13 +51,15 @@ jRadio, и слушается его по UART.
 ## Прошивка
 
 **Из браузера, без ESP-IDF:** [jmper-ha.github.io/jradio-bt](https://jmper-ha.github.io/jradio-bt/) —
-подключить модуль по USB, нажать «Прошить», выбрать порт. Chrome или Edge на
-компьютере. Страница собирается автоматически из тега `v*` и из каждого push в `main`
-(`.github/workflows/pages.yml`): прошивка компилируется в образе ESP-IDF 5.5.5,
-три `.bin` и манифест публикуются на GitHub Pages; прошивает esptool-js прямо
-в браузере.
+выбрать модуль (WROOM или WROVER), подключить его по USB, нажать «Прошить»,
+выбрать порт. Chrome или Edge на компьютере; страница на русском и английском.
+Страница собирается автоматически из тега `v*` и из каждого push в `main`
+(`.github/workflows/pages.yml`): обе прошивки компилируются в образе ESP-IDF
+5.5.5, их `.bin` и манифест публикуются на GitHub Pages; прошивает esptool-js
+прямо в браузере.
 
-**Из исходников:** одна сборка на все платы — экрана у модуля нет. Нужен ESP-IDF
+**Из исходников:** одна сборка на все платы с WROOM и одна на WROVER — экрана
+у модуля нет. Нужен ESP-IDF
 5.5.x, тот же, что у jRadio; как его поставить — в
 [инструкции jRadio](https://github.com/jmper-ha/jradio/blob/main/doc/toolchain.md).
 
@@ -68,6 +75,15 @@ jRadio, и слушается его по UART.
 source <esp-idf>/export.sh
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor    # порт USB-консоли модуля
+```
+
+Для WROVER — отдельная папка сборки, `sdkconfig.wrover` поверх настроек по
+умолчанию переносит UART на 32/33:
+
+```bash
+idf.py -B build_wrover -D SDKCONFIG=build_wrover/sdkconfig \
+       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.wrover" build
+idf.py -B build_wrover -p /dev/ttyUSB0 flash monitor
 ```
 
 Версия — в `main/version.h` и в теге git того же номера; точный коммит модуль

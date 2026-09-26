@@ -39,16 +39,23 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
           idf.py build
+          # The WROVER build: its PSRAM takes GPIO 16/17, so the UART to the
+          # host moves to 32/33 (sdkconfig.wrover, read after the defaults).
+          idf.py -B build_wrover -D SDKCONFIG=build_wrover/sdkconfig \
+                 -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.wrover" build
+          grep -q '^CONFIG_JBT_UART_TX_GPIO=32$' build_wrover/sdkconfig
       - name: Assemble the site
         shell: bash
         run: |
           version="${GITHUB_REF_NAME}"
           case "$version" in v*) ;; *) version="$(git describe --tags --always)";; esac
-          mkdir -p site/firmware
-          cp build/bootloader/bootloader.bin build/partition_table/partition-table.bin build/jradio-bt.bin site/firmware/
+          mkdir -p site/firmware/wroom site/firmware/wrover
+          cp build/bootloader/bootloader.bin build/partition_table/partition-table.bin build/jradio-bt.bin site/firmware/wroom/
+          cp build_wrover/bootloader/bootloader.bin build_wrover/partition_table/partition-table.bin build_wrover/jradio-bt.bin site/firmware/wrover/
           cp docs/index.html site/
           sed "s/\"version\": \"dev\"/\"version\": \"${version}\"/" docs/manifest.json > site/manifest.json
           echo "${version}" > site/firmware/VERSION
+          ls -lR site/firmware
           cat site/manifest.json
       - uses: actions/upload-pages-artifact@v3
         with:

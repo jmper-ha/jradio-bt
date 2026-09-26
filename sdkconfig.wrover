@@ -1,0 +1,6 @@
+# The ESP32-WROVER variant, read after sdkconfig.defaults: the module's PSRAM
+# is wired to GPIO 16 and 17, which the WROOM build uses for the UART to the
+# host, so on a WROVER the link moves to 32 (TX) and 33 (RX). Nothing else
+# differs - the PSRAM stays unused, and the I2S pins are free on both.
+CONFIG_JBT_UART_TX_GPIO=32
+CONFIG_JBT_UART_RX_GPIO=33

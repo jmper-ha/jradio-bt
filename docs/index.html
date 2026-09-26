@@ -19,6 +19,7 @@
     body { margin: 0; background: var(--bg); color: var(--ink);
            font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
     h1 { font-size: 1.9rem; margin: 0 0 4px; }
     h1 small { font-weight: 400; color: var(--muted); font-size: 1rem; margin-left: .5rem; }
     h2 { font-size: 1.15rem; margin: 32px 0 8px; }
@@ -36,92 +37,81 @@
     .install { font: inherit; font-weight: 600; font-size: 1.05rem; padding: 12px 28px; border: 0; border-radius: 8px;
                background: var(--accent); color: var(--accent-ink); cursor: pointer; }
     .install:hover { filter: brightness(1.08); }
+    .install:disabled { opacity: .5; cursor: default; filter: none; }
     .note { color: var(--muted); font-size: .92rem; }
     .warn { border-left: 4px solid var(--accent); padding: 8px 12px; background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 6px; }
     a { color: var(--blue); }
-    .en { margin-top: 48px; border-top: 1px solid var(--rule); padding-top: 24px; color: var(--muted); }
-    .en h2 { color: var(--ink); }
+    .switch { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+    .switch button { font: inherit; font-size: .9rem; padding: 6px 14px; border: 0; background: transparent;
+                     color: var(--muted); cursor: pointer; }
+    .switch button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    .module-choice { margin: 14px 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   </style>
 </head>
 <body>
 <main>
-  <h1>jradio-bt <small id="version"></small></h1>
-  <p class="lead">Bluetooth-модуль для <a href="https://github.com/jmper-ha/jradio">jRadio</a>:
-    приём музыки с телефона и передача на Bluetooth-колонку. Прошивается прямо отсюда,
-    из браузера — ESP-IDF и VS Code не нужны.</p>
+  <header>
+    <h1>jradio-bt <small id="version"></small></h1>
+    <!-- The page has no device to take a language from, so it has a switch;
+         a first visit goes by the browser's own language. -->
+    <div class="switch" role="group" aria-label="Язык / Language">
+      <button type="button" data-lang="ru">RU</button>
+      <button type="button" data-lang="en">EN</button>
+    </div>
+  </header>
+  <p class="lead" data-i18n="lead"></p>
 
   <div class="card">
-    <h2 style="margin-top:0">Прошить модуль</h2>
+    <h2 style="margin-top:0" data-i18n="flash_title"></h2>
+    <div class="module-choice">
+      <span data-i18n="module_label"></span>
+      <div class="switch" role="group" id="module-switch">
+        <button type="button" data-module="wroom">WROOM</button>
+        <button type="button" data-module="wrover">WROVER</button>
+      </div>
+    </div>
+    <p class="note" data-i18n="module_note"></p>
     <ol>
-      <li>Подключите модуль (плату ESP32 WROOM-32) к компьютеру USB-кабелем — своим, не через jRadio.
-        Кабель должен быть с данными, а не только зарядный.</li>
-      <li>Нажмите кнопку и выберите порт модуля в окне браузера.</li>
-      <li>При первой установке отметьте «стереть всю память». Через минуту модуль перезагрузится с новой прошивкой.</li>
-      <li><b>При обновлении</b> модуля, который уже работал с jRadio, галочку не ставьте: стирание удалит сопряжённые
-        телефоны и колонку, и их придётся связывать заново. Не уверены — не ставьте: обновление встаёт и без стирания.
-        Стирать нужно, только если на плате была чужая прошивка или модуль после прошивки не заработал.</li>
+      <li data-i18n="step1"></li>
+      <li data-i18n="step2"></li>
+      <li data-i18n="step3"></li>
+      <li data-i18n="step4"></li>
     </ol>
     <div class="flash">
-      <button id="install" class="install" type="button">Прошить</button>
-      <label class="note"><input id="erase" type="checkbox"> стереть всю память (первая установка или чужая прошивка)</label>
+      <button id="install" class="install" type="button" data-i18n="install"></button>
+      <label class="note"><input id="erase" type="checkbox"> <span data-i18n="erase"></span></label>
     </div>
-    <p id="unsupported" class="warn" hidden>Этот браузер не умеет работать с последовательным портом.
-      Откройте страницу в <b>Chrome</b> или <b>Edge</b> на компьютере — с телефона, из Firefox и Safari прошить нельзя.</p>
+    <p id="unsupported" class="warn" hidden data-i18n="unsupported"></p>
     <p id="status" class="note" aria-live="polite"></p>
     <progress id="progress" max="100" value="0" hidden style="width:100%"></progress>
-    <details id="log-box" hidden><summary class="note">Журнал</summary><pre id="log" class="note" style="white-space:pre-wrap;margin:6px 0 0"></pre></details>
+    <details id="log-box" hidden><summary class="note" data-i18n="log"></summary><pre id="log" class="note" style="white-space:pre-wrap;margin:6px 0 0"></pre></details>
   </div>
 
-  <h2>Если порт не появляется</h2>
+  <h2 data-i18n="port_title"></h2>
   <ul>
-    <li><b>Драйвер USB-UART.</b> На большинстве плат стоит CP2102 или CH340; Windows иногда не находит драйвер сама:
-      <a href="https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers">CP210x</a>,
-      <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">CH340/CH341</a>.
-      В диспетчере устройств плата должна значиться как COM-порт.</li>
-    <li><b>Плата не входит в режим прошивки.</b> Зажмите кнопку <b>BOOT</b> (иногда подписана IO0), коротко нажмите
-      <b>RST</b>/<b>EN</b>, отпустите BOOT — и нажмите «Прошить» ещё раз.</li>
-    <li><b>Порт занят.</b> Закройте монитор порта, Arduino IDE, VS Code с открытым терминалом ESP-IDF.</li>
-    <li>На Linux пользователь должен состоять в группе <code>dialout</code> (или <code>uucp</code>).</li>
+    <li data-i18n="port_driver"></li>
+    <li data-i18n="port_boot"></li>
+    <li data-i18n="port_busy"></li>
+    <li data-i18n="port_linux"></li>
   </ul>
 
-  <h2>Подключение к jRadio</h2>
-  <p>После прошивки отключите модуль от компьютера и соедините с платой jRadio. Ножки на стороне S3 —
-    те, что названы в вашем <code>board_options.h</code>:</p>
+  <h2 data-i18n="wiring_title"></h2>
+  <p data-i18n="wiring_lead"></p>
   <table>
-    <thead><tr><th>Модуль (WROOM-32)</th><th>jRadio (ESP32-S3)</th><th>Что</th></tr></thead>
+    <thead><tr><th id="th-module"></th><th data-i18n="th_host"></th><th data-i18n="th_what"></th></tr></thead>
     <tbody>
-      <tr><td>GPIO 17 (TX)</td><td><code>BT_UART_RX_GPIO</code></td><td>UART 921600</td></tr>
-      <tr><td>GPIO 16 (RX)</td><td><code>BT_UART_TX_GPIO</code></td><td></td></tr>
-      <tr><td>GPIO 26</td><td><code>I2S_BCLK_GPIO</code></td><td>общая шина I2S, через 33–47 Ом с каждой стороны</td></tr>
+      <tr><td id="pin-tx"></td><td><code>BT_UART_RX_GPIO</code></td><td data-i18n="row_uart"></td></tr>
+      <tr><td id="pin-rx"></td><td><code>BT_UART_TX_GPIO</code></td><td></td></tr>
+      <tr><td>GPIO 26</td><td><code>I2S_BCLK_GPIO</code></td><td data-i18n="row_i2s"></td></tr>
       <tr><td>GPIO 25</td><td><code>I2S_LRCK_GPIO</code></td><td></td></tr>
-      <tr><td>GPIO 22</td><td><code>I2S_DOUT_GPIO</code></td><td>тот же провод идёт и в DIN ЦАПа</td></tr>
+      <tr><td>GPIO 22</td><td><code>I2S_DOUT_GPIO</code></td><td data-i18n="row_dout"></td></tr>
       <tr><td>GND</td><td>GND</td><td></td></tr>
     </tbody>
   </table>
-  <p class="note">В прошивке jRadio модуль включается строками <code>BLUETOOTH</code>, <code>BT_UART_TX_GPIO</code>
-    и <code>BT_UART_RX_GPIO</code> в <code>board_options.h</code> (TX одной платы идёт в RX другой). Антенны
-    двух плат лучше разнести: рядом они мешают друг другу в те секунды, когда модуль ищет колонку. Подробности — в
-    <a href="https://github.com/jmper-ha/jradio/blob/main/doc/hardware.md#bluetooth-модуль-jradio-bt">описании железа jRadio</a>
-    и в <a href="https://github.com/jmper-ha/jradio-bt">README модуля</a>.</p>
+  <p class="note" data-i18n="wiring_note"></p>
 
-  <h2>Что внутри</h2>
-  <p class="note">Три файла с этой же страницы: загрузчик, таблица разделов и приложение
-    (<a href="firmware/jradio-bt.bin">jradio-bt.bin</a>). Их же можно залить и вручную:
-    <code>esptool.py --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partition-table.bin 0x10000 jradio-bt.bin</code>.
-    Собирается автоматически из тега репозитория в ESP-IDF 5.5.5; номер версии вверху страницы — этот тег.</p>
-
-  <section class="en" lang="en">
-    <h2>In English</h2>
-    <p>The Bluetooth module for jRadio, flashed from the browser: plug the ESP32 WROOM-32 board into the computer over
-      its own USB, press <b>Прошить</b> ("Flash"), pick the port, allow the erase on a first install. When updating a module that
-      already works with jRadio, leave the erase off - it forgets the paired phones and speaker; erase only after
-      someone else's firmware, or if the module does not start after flashing. Chrome or Edge
-      on a computer only - Web Serial is not available on phones, in Firefox or Safari. If no port shows up, install
-      the CP210x or CH340 driver, or hold <b>BOOT</b> while tapping <b>RST</b> and try again. Wiring to jRadio is in
-      the table above (module pin, then the macro naming the S3 pin in your <code>board_options.h</code>);
-      details in the
-      <a href="https://github.com/jmper-ha/jradio-bt/blob/main/README.en.md">README</a>.</p>
-  </section>
+  <h2 data-i18n="inside_title"></h2>
+  <p class="note" id="inside"></p>
 </main>
 <script type="module">
   /* esptool-js straight, not ESP Web Tools: that one first probes the
@@ -130,16 +120,157 @@
      flasher ever runs. The module has no Improv to offer anyway. */
   import {ESPLoader, Transport} from 'https://unpkg.com/esptool-js@0.6.1/bundle.js';
 
+  /* Two languages in the page itself: it is one page on its own site, with
+     nothing to share a dictionary with. Strings that carry a link or a code
+     span are markup, and set as such - they are all written here. */
+  const TEXT = {
+    ru: {
+      title: 'jradio-bt — прошивка из браузера',
+      lead: 'Bluetooth-модуль для <a href="https://github.com/jmper-ha/jradio">jRadio</a>: приём музыки с телефона и передача на Bluetooth-колонку. Прошивается прямо отсюда, из браузера — ESP-IDF и VS Code не нужны.',
+      flash_title: 'Прошить модуль',
+      module_label: 'Модуль:',
+      module_note: 'WROOM-32 — обычный модуль. У WROVER ножки 16 и 17 заняты памятью PSRAM, поэтому связь с jRadio идёт по другим ножкам — таблица ниже показывает какие.',
+      step1: 'Выберите модуль и подключите его (плату ESP32) к компьютеру USB-кабелем — своим, не через jRadio. Кабель должен быть с данными, а не только зарядный.',
+      step2: 'Нажмите кнопку и выберите порт модуля в окне браузера.',
+      step3: 'При первой установке отметьте «стереть всю память». Через минуту модуль перезагрузится с новой прошивкой.',
+      step4: '<b>При обновлении</b> модуля, который уже работал с jRadio, галочку не ставьте: стирание удалит сопряжённые телефоны и колонку, и их придётся связывать заново. Не уверены — не ставьте: обновление встаёт и без стирания. Стирать нужно, только если на плате была чужая прошивка или модуль после прошивки не заработал.',
+      install: 'Прошить',
+      erase: 'стереть всю память (первая установка или чужая прошивка)',
+      unsupported: 'Этот браузер не умеет работать с последовательным портом. Откройте страницу в <b>Chrome</b> или <b>Edge</b> на компьютере — с телефона, из Firefox и Safari прошить нельзя.',
+      log: 'Журнал',
+      port_title: 'Если порт не появляется',
+      port_driver: '<b>Драйвер USB-UART.</b> На большинстве плат стоит CP2102 или CH340; Windows иногда не находит драйвер сама: <a href="https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers">CP210x</a>, <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">CH340/CH341</a>. В диспетчере устройств плата должна значиться как COM-порт.',
+      port_boot: '<b>Плата не входит в режим прошивки.</b> Зажмите кнопку <b>BOOT</b> (иногда подписана IO0), коротко нажмите <b>RST</b>/<b>EN</b>, отпустите BOOT — и нажмите «Прошить» ещё раз.',
+      port_busy: '<b>Порт занят.</b> Закройте монитор порта, Arduino IDE, VS Code с открытым терминалом ESP-IDF.',
+      port_linux: 'На Linux пользователь должен состоять в группе <code>dialout</code> (или <code>uucp</code>).',
+      wiring_title: 'Подключение к jRadio',
+      wiring_lead: 'После прошивки отключите модуль от компьютера и соедините с платой jRadio. Ножки на стороне S3 — те, что заданы в распайке jRadio:',
+      th_module_wroom: 'Модуль (WROOM-32)',
+      th_module_wrover: 'Модуль (WROVER)',
+      th_host: 'jRadio (ESP32-S3)',
+      th_what: 'Что',
+      row_uart: 'UART 921600',
+      row_i2s: 'общая шина I2S, через 33–47 Ом с каждой стороны',
+      row_dout: 'тот же провод идёт и в DIN ЦАПа',
+      wiring_note: 'В jRadio модуль включается в распайке — в <a href="https://jmper-ha.github.io/jradio/">редакторе на сайте прошивальщика</a> или строками <code>BLUETOOTH</code>, <code>BT_UART_TX_GPIO</code> и <code>BT_UART_RX_GPIO</code> в <code>board_options.h</code> (TX одной платы идёт в RX другой). Антенны двух плат лучше разнести: рядом они мешают друг другу в те секунды, когда модуль ищет колонку. Подробности — в <a href="https://github.com/jmper-ha/jradio/blob/main/doc/hardware.md#bluetooth-модуль-jradio-bt">описании железа jRadio</a> и в <a href="https://github.com/jmper-ha/jradio-bt">README модуля</a>.',
+      inside_title: 'Что внутри',
+      inside: 'Три файла с этой же страницы: загрузчик, таблица разделов и приложение (<a href="firmware/{module}/jradio-bt.bin">jradio-bt.bin</a>). Их же можно залить и вручную: <code>esptool.py --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partition-table.bin 0x10000 jradio-bt.bin</code>. Собирается автоматически из тега репозитория в ESP-IDF 5.5.5; номер версии вверху страницы — этот тег.',
+      no_manifest: 'Не удалось прочитать manifest.json',
+      manifest_wait: 'Манифест ещё не загружен, попробуйте через секунду.',
+      pick_port: 'Выберите порт модуля в окне браузера…',
+      connecting: 'Подключаемся к модулю… Если не выходит, зажмите BOOT.',
+      chip: 'Чип',
+      wrong_chip: 'Это не ESP32 WROOM/WROVER, а {chip} — прошивка модуля для него не подходит.',
+      downloading: 'Загружаем файлы прошивки…',
+      missing_file: 'Нет файла {file}',
+      erasing: 'Стираем память и записываем прошивку…',
+      writing: 'Записываем прошивку…',
+      done: 'Готово: модуль перезагружен с прошивкой {version} для {module}. Отключите его от компьютера и подключите к jRadio.',
+      error: 'Ошибка',
+      no_answer: 'Модуль не отвечает. Зажмите BOOT, нажмите RST, отпустите BOOT — и «Прошить» ещё раз.',
+      no_port: 'Порт не выбран.',
+      port_lost: 'Порт занят или пропал: закройте другие вкладки и программы, работающие с ним, переподключите кабель и попробуйте снова.',
+      failed: 'Не получилось: {error}',
+    },
+    en: {
+      title: 'jradio-bt - flashing from the browser',
+      lead: 'The Bluetooth module for <a href="https://github.com/jmper-ha/jradio">jRadio</a>: music from a phone in, and out to a Bluetooth speaker. Flashed right here from the browser - no ESP-IDF, no VS Code.',
+      flash_title: 'Flash the module',
+      module_label: 'Module:',
+      module_note: 'WROOM-32 is the ordinary module. On a WROVER pins 16 and 17 belong to the PSRAM, so the link to jRadio uses other pins - the table below shows which.',
+      step1: 'Pick the module and plug it (the ESP32 board) into the computer with a USB cable - its own, not through jRadio. The cable must carry data, not only charge.',
+      step2: 'Press the button and pick the module\'s port in the browser\'s window.',
+      step3: 'On a first install tick "erase the whole flash". In a minute the module restarts with the new firmware.',
+      step4: '<b>When updating</b> a module that already works with jRadio, leave it unticked: erasing forgets the paired phones and speaker, and they have to be paired again. Not sure - leave it: an update goes on without erasing. Erase only after someone else\'s firmware, or if the module does not start after flashing.',
+      install: 'Flash',
+      erase: 'erase the whole flash (a first install or someone else\'s firmware)',
+      unsupported: 'This browser cannot use a serial port. Open the page in <b>Chrome</b> or <b>Edge</b> on a computer - phones, Firefox and Safari cannot flash.',
+      log: 'Log',
+      port_title: 'If no port shows up',
+      port_driver: '<b>The USB-UART driver.</b> Most boards carry a CP2102 or a CH340; Windows does not always find the driver by itself: <a href="https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers">CP210x</a>, <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html">CH340/CH341</a>. In the Device Manager the board should show as a COM port.',
+      port_boot: '<b>The board will not enter flashing mode.</b> Hold <b>BOOT</b> (sometimes labelled IO0), tap <b>RST</b>/<b>EN</b>, let go of BOOT - and press Flash again.',
+      port_busy: '<b>The port is busy.</b> Close any serial monitor, the Arduino IDE, VS Code with an ESP-IDF terminal open.',
+      port_linux: 'On Linux the user has to be in the <code>dialout</code> (or <code>uucp</code>) group.',
+      wiring_title: 'Wiring to jRadio',
+      wiring_lead: 'After flashing, unplug the module from the computer and connect it to the jRadio board. The pins on the S3 side are the ones set in jRadio\'s wiring:',
+      th_module_wroom: 'Module (WROOM-32)',
+      th_module_wrover: 'Module (WROVER)',
+      th_host: 'jRadio (ESP32-S3)',
+      th_what: 'What',
+      row_uart: 'UART 921600',
+      row_i2s: 'the shared I2S bus, 33-47 ohm in series at each end',
+      row_dout: 'the same wire goes on to the DAC\'s DIN',
+      wiring_note: 'In jRadio the module is switched on in the wiring - in the <a href="https://jmper-ha.github.io/jradio/">editor on the flasher site</a> or with the <code>BLUETOOTH</code>, <code>BT_UART_TX_GPIO</code> and <code>BT_UART_RX_GPIO</code> lines of <code>board_options.h</code> (one board\'s TX goes to the other\'s RX). Keep the two boards\' antennas apart: side by side they disturb each other in the seconds the module searches for a speaker. Details in the <a href="https://github.com/jmper-ha/jradio/blob/main/doc/hardware.en.md#bluetooth-the-jradio-bt-module">jRadio hardware notes</a> and the <a href="https://github.com/jmper-ha/jradio-bt/blob/main/README.en.md">module\'s README</a>.',
+      inside_title: 'What is inside',
+      inside: 'Three files from this same page: the bootloader, the partition table and the app (<a href="firmware/{module}/jradio-bt.bin">jradio-bt.bin</a>). They can be written by hand too: <code>esptool.py --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partition-table.bin 0x10000 jradio-bt.bin</code>. Built automatically from a repository tag in ESP-IDF 5.5.5; the version at the top of the page is that tag.',
+      no_manifest: 'Cannot read manifest.json',
+      manifest_wait: 'The manifest has not loaded yet, try again in a second.',
+      pick_port: 'Pick the module\'s port in the browser\'s window…',
+      connecting: 'Connecting to the module… If it does not work, hold BOOT.',
+      chip: 'Chip',
+      wrong_chip: 'This is not an ESP32 WROOM/WROVER but {chip} - the module\'s firmware is not for it.',
+      downloading: 'Fetching the firmware files…',
+      missing_file: 'The file {file} is missing',
+      erasing: 'Erasing the flash and writing the firmware…',
+      writing: 'Writing the firmware…',
+      done: 'Done: the module restarted with firmware {version} for {module}. Unplug it from the computer and connect it to jRadio.',
+      error: 'Error',
+      no_answer: 'The module does not answer. Hold BOOT, tap RST, let go of BOOT - and Flash again.',
+      no_port: 'No port was chosen.',
+      port_lost: 'The port is busy or gone: close other tabs and programs using it, reconnect the cable and try again.',
+      failed: 'It did not work: {error}',
+    },
+  };
+
+  /* The link to the host is on these module pins; the WROVER's PSRAM takes
+     16 and 17, so its build moves the link to 32 and 33 (sdkconfig.wrover). */
+  const MODULES = {
+    wroom: {name: 'WROOM-32', tx: 17, rx: 16},
+    wrover: {name: 'WROVER', tx: 32, rx: 33},
+  };
+
   const $ = (id) => document.getElementById(id);
   const button = $('install'), status = $('status'), progress = $('progress'), logBox = $('log-box'), log = $('log');
   let manifest = null;
+  let lang = 'ru';
+  let module = 'wroom';
+
+  const remember = (key, value) => { try { localStorage.setItem(key, value); } catch (_) {} };
+  const recall = (key) => { try { return localStorage.getItem(key); } catch (_) { return null; } };
+  const t = (key, values = {}) => (TEXT[lang][key] || key).replace(/\{(\w+)\}/g, (all, name) => (name in values ? values[name] : all));
+
+  function render() {
+    document.documentElement.lang = lang;
+    document.title = t('title');
+    for (const node of document.querySelectorAll('[data-i18n]')) node.innerHTML = t(node.dataset.i18n);
+    for (const node of document.querySelectorAll('[data-lang]')) node.setAttribute('aria-pressed', String(node.dataset.lang === lang));
+    for (const node of document.querySelectorAll('[data-module]')) node.setAttribute('aria-pressed', String(node.dataset.module === module));
+    $('module-switch').setAttribute('aria-label', t('module_label'));
+    $('th-module').textContent = t(`th_module_${module}`);
+    $('pin-tx').textContent = `GPIO ${MODULES[module].tx} (TX)`;
+    $('pin-rx').textContent = `GPIO ${MODULES[module].rx} (RX)`;
+    $('inside').innerHTML = t('inside', {module});
+  }
+
+  function setLang(next) { lang = next; remember('jradio-bt.language', lang); render(); }
+  function setModule(next) { module = next; remember('jradio-bt.module', module); render(); }
+
+  for (const node of document.querySelectorAll('[data-lang]')) node.addEventListener('click', () => setLang(node.dataset.lang));
+  for (const node of document.querySelectorAll('[data-module]')) node.addEventListener('click', () => setModule(node.dataset.module));
+
+  const savedLang = recall('jradio-bt.language');
+  lang = savedLang === 'ru' || savedLang === 'en' ? savedLang
+       : String(navigator.language || '').toLowerCase().startsWith('ru') ? 'ru' : 'en';
+  const savedModule = recall('jradio-bt.module');
+  module = savedModule in MODULES ? savedModule : 'wroom';
+  render();
 
   /* The version comes from the manifest the flasher reads, so the page and
      the binaries can never name different builds. */
   fetch('manifest.json', {cache: 'no-store'})
     .then((r) => r.json())
     .then((m) => { manifest = m; $('version').textContent = m.version || ''; })
-    .catch(() => { status.textContent = 'Не удалось прочитать manifest.json'; });
+    .catch(() => { status.textContent = t('no_manifest'); });
 
   if (!('serial' in navigator)) {
     $('unsupported').hidden = false;
@@ -155,27 +286,27 @@
   };
 
   async function flash() {
-    if (!manifest) { say('Манифест ещё не загружен, попробуйте через секунду.'); return; }
-    const build = manifest.builds[0];
+    if (!manifest) { say(t('manifest_wait')); return; }
+    const build = (manifest.builds || []).find((b) => b.module === module);
+    if (!build) { say(t('failed', {error: `no build for ${MODULES[module].name}`})); return; }
+    const chosen = module;
     button.disabled = true;
     progress.hidden = true;
     let port = null, transport = null;
     try {
-      say('Выберите порт модуля в окне браузера…');
+      say(t('pick_port'));
       port = await navigator.serial.requestPort();
       transport = new Transport(port, false);
       const loader = new ESPLoader({transport, baudrate: 460800, romBaudrate: 115200, terminal});
-      say('Подключаемся к модулю… Если не выходит, зажмите BOOT.');
+      say(t('connecting'));
       const chip = await loader.main();
-      line('Чип: ' + chip);
-      if (!/^ESP32(?![-_]?[SCHP])/.test(chip)) {
-        throw new Error('Это не ESP32 WROOM-32, а ' + chip + ' — прошивка модуля для него не подходит.');
-      }
-      say('Загружаем файлы прошивки…');
+      line(`${t('chip')}: ${chip}`);
+      if (!/^ESP32(?![-_]?[SCHP])/.test(chip)) throw new Error(t('wrong_chip', {chip}));
+      say(t('downloading'));
       const fileArray = [];
       for (const part of build.parts) {
         const response = await fetch(part.path, {cache: 'no-store'});
-        if (!response.ok) throw new Error('Нет файла ' + part.path);
+        if (!response.ok) throw new Error(t('missing_file', {file: part.path}));
         /* Bytes, not a binary string: esptool-js 0.6 compresses the data
            with pako, which UTF-8-encodes a string - every byte over 0x7F
            became two, the stream inflated past the file's length, and the
@@ -183,7 +314,7 @@
         fileArray.push({data: new Uint8Array(await response.arrayBuffer()), address: part.offset});
       }
       const erase = $('erase').checked;
-      say(erase ? 'Стираем память и записываем прошивку…' : 'Записываем прошивку…');
+      say(erase ? t('erasing') : t('writing'));
       progress.hidden = false;
       progress.value = 0;
       const total = fileArray.reduce((sum, f) => sum + f.data.length, 0);
@@ -198,22 +329,22 @@
       });
       progress.value = 100;
       await loader.after('hard_reset');
-      say('Готово: модуль перезагружен с прошивкой ' + (manifest.version || '') + '. Отключите его от компьютера и подключите к jRadio.');
+      say(t('done', {version: manifest.version || '', module: MODULES[chosen].name}));
     } catch (error) {
       const text = String(error && error.message ? error.message : error);
-      line('Ошибка: ' + text);
+      line(`${t('error')}: ${text}`);
       if (/Failed to connect|timed out|Timed out|sync/i.test(text)) {
-        say('Модуль не отвечает. Зажмите BOOT, нажмите RST, отпустите BOOT — и «Прошить» ещё раз.');
+        say(t('no_answer'));
       } else if (/NotFoundError|No port selected/i.test(text)) {
-        say('Порт не выбран.');
+        say(t('no_port'));
       } else if (/lost|busy|not ready|NetworkError|Failed to open/i.test(text)) {
-        say('Порт занят или пропал: закройте другие вкладки и программы, работающие с ним, переподключите кабель и попробуйте снова.');
+        say(t('port_lost'));
       } else {
-        say('Не получилось: ' + text);
+        say(t('failed', {error: text}));
       }
     } finally {
       try { if (transport) await transport.disconnect(); } catch (_) {}
-      button.disabled = false;
+      button.disabled = !('serial' in navigator);
     }
   }
   button.addEventListener('click', flash);
