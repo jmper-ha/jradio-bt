@@ -29,7 +29,7 @@ jobs:
     container:
       image: espressif/idf:v5.5.5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The app descriptor carries `git describe`, which needs the tags.
           fetch-depth: 0
@@ -57,7 +57,7 @@ jobs:
           echo "${version}" > site/firmware/VERSION
           ls -lR site/firmware
           cat site/manifest.json
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -69,4 +69,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
