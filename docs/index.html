@@ -167,6 +167,7 @@
       writing: 'Записываем прошивку…',
       done: 'Готово: модуль перезагружен с прошивкой {version} для {module}. Отключите его от компьютера и подключите к jRadio.',
       error: 'Ошибка',
+      slow_retry: 'На 460800 бод связь с ошибками — шью заново на 115200, это займёт около минуты.',
       no_answer: 'Модуль не отвечает. Зажмите BOOT, нажмите RST, отпустите BOOT — и «Прошить» ещё раз.',
       no_port: 'Порт не выбран.',
       port_lost: 'Порт занят или пропал: закройте другие вкладки и программы, работающие с ним, переподключите кабель и попробуйте снова.',
@@ -215,6 +216,7 @@
       writing: 'Writing the firmware…',
       done: 'Done: the module restarted with firmware {version} for {module}. Unplug it from the computer and connect it to jRadio.',
       error: 'Error',
+      slow_retry: 'The link garbles data at 460800 baud - flashing again at 115200, which takes about a minute.',
       no_answer: 'The module does not answer. Hold BOOT, tap RST, let go of BOOT - and Flash again.',
       no_port: 'No port was chosen.',
       port_lost: 'The port is busy or gone: close other tabs and programs using it, reconnect the cable and try again.',
@@ -285,19 +287,16 @@
     write(text) { log.textContent += text; },
   };
 
-  async function flash() {
-    if (!manifest) { say(t('manifest_wait')); return; }
-    const build = (manifest.builds || []).find((b) => b.module === module);
-    if (!build) { say(t('failed', {error: `no build for ${MODULES[module].name}`})); return; }
-    const chosen = module;
-    button.disabled = true;
-    progress.hidden = true;
-    let port = null, transport = null;
+  const FAST_BAUD = 460800;
+  const ROM_BAUD = 115200;
+  const GARBLED = /Invalid head of packet|verify flash chip|serial noise|corruption/i;
+
+  /* One whole go - connect, check, write, restart - at `baudrate`. The
+     transport is handed back so the caller can let go of the port. */
+  async function attempt(port, build, baudrate) {
+    const transport = new Transport(port, false);
     try {
-      say(t('pick_port'));
-      port = await navigator.serial.requestPort();
-      transport = new Transport(port, false);
-      const loader = new ESPLoader({transport, baudrate: 460800, romBaudrate: 115200, terminal});
+      const loader = new ESPLoader({transport, baudrate, romBaudrate: ROM_BAUD, terminal});
       say(t('connecting'));
       const chip = await loader.main();
       line(`${t('chip')}: ${chip}`);
@@ -329,6 +328,38 @@
       });
       progress.value = 100;
       await loader.after('hard_reset');
+      return transport;
+    } catch (error) {
+      // The caller needs the port back to try again, or to leave it.
+      try { await transport.disconnect(); } catch (_) {}
+      throw error;
+    }
+  }
+
+  async function flash() {
+    if (!manifest) { say(t('manifest_wait')); return; }
+    const build = (manifest.builds || []).find((b) => b.module === module);
+    if (!build) { say(t('failed', {error: `no build for ${MODULES[module].name}`})); return; }
+    const chosen = module;
+    button.disabled = true;
+    progress.hidden = true;
+    let port = null, transport = null;
+    try {
+      say(t('pick_port'));
+      port = await navigator.serial.requestPort();
+      /* 460800 first, four times as fast as the ROM's 115200. But on some
+         CP2102 boards - the cable, the driver - every reply comes back
+         garbled once the stub has moved up ("Invalid head of packet
+         (0x78)"), and those users could not flash at all. A garbled link
+         is tried once more from the start at 115200. */
+      try {
+        transport = await attempt(port, build, FAST_BAUD);
+      } catch (error) {
+        if (!GARBLED.test(String(error && error.message ? error.message : error))) throw error;
+        line(t('slow_retry'));
+        say(t('slow_retry'));
+        transport = await attempt(port, build, ROM_BAUD);
+      }
       say(t('done', {version: manifest.version || '', module: MODULES[chosen].name}));
     } catch (error) {
       const text = String(error && error.message ? error.message : error);
