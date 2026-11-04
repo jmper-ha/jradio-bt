@@ -30,6 +30,9 @@ static TaskHandle_t s_writer;
 static SemaphoreHandle_t s_lock;
 static uint32_t s_sample_rate = 44100U;
 static uint8_t s_channels = 2U;
+/* Read at the claim: the host's word on who clocks the bus. */
+static bool s_follow;
+static uint8_t s_follow_slot_bits = 16U;
 static bool s_claimed;
 static bool s_streaming;
 static bool s_prefetching = true;
@@ -42,6 +45,12 @@ static volatile bool s_flush;
  * roughly how a phone expects its slider to feel - linear would sit loud
  * over most of its travel. */
 static volatile int32_t s_gain_q15 = 32767;
+/* Under the follower's 32-bit slots a chunk goes out as twice its bytes. */
+static int32_t s_wide[AUDIO_CHUNK / 2U];
+/* A write has to give up on a host that stopped clocking: a channel cannot be
+ * disabled under a write in progress, so an unlimited one would hang the mode
+ * change waiting for this task. */
+#define AUDIO_FOLLOW_WRITE_MS 200U
 
 /* The level the host's meter reads while a phone plays: while the phone has
  * the bus no PCM passes the host, so the module measures what it clocks out
@@ -120,6 +129,26 @@ static void audio_out_apply_gain(int16_t *samples, size_t count)
     }
 }
 
+static void audio_out_send(const uint8_t *chunk, size_t length)
+{
+    size_t written = 0U;
+    if (!s_follow) {
+        (void)i2s_channel_write(s_channel, chunk, length, &written, portMAX_DELAY);
+        return;
+    }
+    if (s_follow_slot_bits != 32U) {
+        (void)i2s_channel_write(s_channel, chunk, length, &written,
+                                pdMS_TO_TICKS(AUDIO_FOLLOW_WRITE_MS));
+        return;
+    }
+    const size_t samples = length / 2U;
+    for (size_t i = 0; i < samples; ++i) {
+        s_wide[i] = (int32_t)((const int16_t *)chunk)[i] << 16;
+    }
+    (void)i2s_channel_write(s_channel, s_wide, samples * sizeof(int32_t), &written,
+                            pdMS_TO_TICKS(AUDIO_FOLLOW_WRITE_MS));
+}
+
 static void audio_out_writer_task(void *arg)
 {
     (void)arg;
@@ -150,15 +179,21 @@ static void audio_out_writer_task(void *arg)
             s_prefetching = true;
             continue;
         }
-        /* Measured only when it is going to the DAC, and before the gain. */
-        if (s_claimed && s_streaming) audio_out_measure((const int16_t *)chunk, length / 2U);
-        audio_out_apply_gain((int16_t *)chunk, length / 2U);
-        if (s_claimed && s_streaming) {
-            size_t written = 0U;
-            (void)i2s_channel_write(s_channel, chunk, length, &written, portMAX_DELAY);
+        /* Measured only when it is going to the DAC, and before the gain. A
+         * host that takes the samples has its own meter and its own volume. */
+        if (!s_follow) {
+            if (s_claimed && s_streaming) audio_out_measure((const int16_t *)chunk, length / 2U);
+            audio_out_apply_gain((int16_t *)chunk, length / 2U);
         }
+        if (s_claimed && s_streaming) audio_out_send(chunk, length);
         vRingbufferReturnItem(s_ring, chunk);
     }
+}
+
+static i2s_data_bit_width_t audio_out_data_width(void)
+{
+    return s_follow && s_follow_slot_bits == 32U ? I2S_DATA_BIT_WIDTH_32BIT
+                                                 : I2S_DATA_BIT_WIDTH_16BIT;
 }
 
 static esp_err_t audio_out_configure(void)
@@ -166,10 +201,18 @@ static esp_err_t audio_out_configure(void)
     const i2s_std_clk_config_t clock = I2S_STD_CLK_DEFAULT_CONFIG(s_sample_rate);
     /* Philips timing, as the PCM5102 on the jRadio board is wired for and
      * as the S3 drives it. */
+    /* 32-bit samples rather than 16 in a 32-bit slot: the ESP32 sends two
+     * 16-bit channels one after the other in the left slot, and zeros in the
+     * right (seen on the bench, 2026-11-04). */
     const i2s_std_slot_config_t slot = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-        I2S_DATA_BIT_WIDTH_16BIT, s_channels == 1U ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO);
-    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_channel, &clock), TAG, "clock");
+        audio_out_data_width(),
+        s_channels == 1U ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO);
+    /* The slot first: a follower works out its own clock from the slot width
+     * it has then, and changing the slot does not redo it. The other way round
+     * its clock was half what the bus needs, under the 8 x BCLK it has to be,
+     * and every bit came out wrong. */
     ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_slot(s_channel, &slot), TAG, "slot");
+    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_channel, &clock), TAG, "clock");
     return ESP_OK;
 }
 
@@ -192,18 +235,19 @@ esp_err_t audio_out_claim(void)
             err = ESP_ERR_NO_MEM;
         }
         if (err == ESP_OK) {
-            i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+            i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(
+                I2S_NUM_0, s_follow ? I2S_ROLE_SLAVE : I2S_ROLE_MASTER);
             /* Silence, not the last buffer, when the writer is late. */
             channel.auto_clear = true;
             i2s_std_config_t config = {
                 .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(s_sample_rate),
-                .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+                .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(audio_out_data_width(),
                                                                 I2S_SLOT_MODE_STEREO),
                 .gpio_cfg = {
                     .mclk = I2S_GPIO_UNUSED,
                     .bclk = CONFIG_JBT_I2S_BCLK_GPIO,
                     .ws = CONFIG_JBT_I2S_LRCK_GPIO,
-                    .dout = CONFIG_JBT_I2S_DATA_GPIO,
+                    .dout = s_follow ? CONFIG_JBT_I2S_TO_HOST_GPIO : CONFIG_JBT_I2S_DATA_GPIO,
                     .din = I2S_GPIO_UNUSED,
                 },
             };
@@ -214,8 +258,10 @@ esp_err_t audio_out_claim(void)
             if (err == ESP_OK) {
                 s_claimed = true;
                 s_prefetching = true;
-                ESP_LOGI(TAG, "bus claimed: bclk %d lrck %d data %d, %u Hz", CONFIG_JBT_I2S_BCLK_GPIO,
-                         CONFIG_JBT_I2S_LRCK_GPIO, CONFIG_JBT_I2S_DATA_GPIO, (unsigned)s_sample_rate);
+                ESP_LOGI(TAG, "bus %s: bclk %d lrck %d data %d, %u Hz", s_follow ? "followed" : "claimed",
+                         CONFIG_JBT_I2S_BCLK_GPIO, CONFIG_JBT_I2S_LRCK_GPIO,
+                         s_follow ? CONFIG_JBT_I2S_TO_HOST_GPIO : CONFIG_JBT_I2S_DATA_GPIO,
+                         (unsigned)s_sample_rate);
             } else if (s_channel != NULL) {
                 (void)i2s_del_channel(s_channel);
                 s_channel = NULL;
@@ -239,7 +285,7 @@ void audio_out_release(void)
         /* Back to plain inputs, no pull: the host drives these next, and a
          * pull-up on our side would fight its edges. */
         const gpio_num_t pins[] = {CONFIG_JBT_I2S_BCLK_GPIO, CONFIG_JBT_I2S_LRCK_GPIO,
-                                   CONFIG_JBT_I2S_DATA_GPIO};
+                                   s_follow ? CONFIG_JBT_I2S_TO_HOST_GPIO : CONFIG_JBT_I2S_DATA_GPIO};
         for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); ++i) {
             (void)gpio_reset_pin(pins[i]);
             (void)gpio_set_direction(pins[i], GPIO_MODE_INPUT);
@@ -248,6 +294,16 @@ void audio_out_release(void)
         ESP_LOGI(TAG, "bus released");
     }
     xSemaphoreGive(s_lock);
+}
+
+void audio_out_set_bus(bool follow, uint8_t slot_bits)
+{
+    if (s_lock != NULL) xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (!s_claimed) {
+        s_follow = follow;
+        s_follow_slot_bits = slot_bits;
+    }
+    if (s_lock != NULL) xSemaphoreGive(s_lock);
 }
 
 bool audio_out_is_claimed(void)

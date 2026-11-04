@@ -40,6 +40,13 @@ menu "jradio-bt"
         int "I2S DATA GPIO"
         default 22
 
+    config JBT_I2S_TO_HOST_GPIO
+        int "I2S data to the host GPIO"
+        default 23
+        help
+            The phone's samples when the host clocks the bus and plays them
+            itself. 33-47 ohm in series, like the other three.
+
     config JBT_LOG_MIRROR
         bool "Mirror the log to the host as LOG frames"
         default y

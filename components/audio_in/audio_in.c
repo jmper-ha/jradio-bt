@@ -33,6 +33,9 @@ static SemaphoreHandle_t s_lock;
 static bool s_open;
 static volatile bool s_run;
 static uint32_t s_source_rate = 44100U;
+/* The bus's slots, the host's word: with 32-bit ones the samples are read as
+ * such, because the ESP32 does not place 16 bits in a wider slot. */
+static uint8_t s_slot_bits = 16U;
 static uint8_t s_source_channels = 2U;
 static int64_t s_last_block_us;
 
@@ -82,10 +85,19 @@ static void audio_in_reader_task(void *arg)
     (void)arg;
     /* Up to three output frames per input frame at the lowest rate. */
     static int16_t in[AUDIO_IN_BLOCK_FRAMES * 2U];
+    /* The same samples off a bus with 32-bit slots, their top half taken. */
+    static int32_t wide[AUDIO_IN_BLOCK_FRAMES * 2U];
     static int16_t out[AUDIO_IN_BLOCK_FRAMES * 2U * 3U + 8U];
     while (s_run) {
         size_t read = 0U;
-        const esp_err_t err = i2s_channel_read(s_channel, in, AUDIO_IN_BLOCK_BYTES, &read, pdMS_TO_TICKS(200));
+        esp_err_t err;
+        if (s_slot_bits == 32U) {
+            err = i2s_channel_read(s_channel, wide, sizeof(wide), &read, pdMS_TO_TICKS(200));
+            read /= 2U;
+            for (size_t i = 0; i < read / 2U; ++i) in[i] = (int16_t)(wide[i] >> 16);
+        } else {
+            err = i2s_channel_read(s_channel, in, AUDIO_IN_BLOCK_BYTES, &read, pdMS_TO_TICKS(200));
+        }
         if (err != ESP_OK || read == 0U) continue;
         s_last_block_us = esp_timer_get_time();
         const uint8_t channels = s_source_channels;
@@ -118,11 +130,12 @@ esp_err_t audio_in_open(void)
         }
         if (err == ESP_OK) {
             i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
+            const i2s_data_bit_width_t width =
+                s_slot_bits == 32U ? I2S_DATA_BIT_WIDTH_32BIT : I2S_DATA_BIT_WIDTH_16BIT;
             i2s_std_config_t config = {
                 .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(s_source_rate),
                 /* Philips, 16-bit stereo, the way the host drives the DAC. */
-                .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                                I2S_SLOT_MODE_STEREO),
+                .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(width, I2S_SLOT_MODE_STEREO),
                 .gpio_cfg = {
                     .mclk = I2S_GPIO_UNUSED,
                     .bclk = CONFIG_JBT_I2S_BCLK_GPIO,
@@ -156,6 +169,13 @@ esp_err_t audio_in_open(void)
     }
     xSemaphoreGive(s_lock);
     return err;
+}
+
+void audio_in_set_slot_bits(uint8_t slot_bits)
+{
+    if (s_lock != NULL) xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (!s_open) s_slot_bits = slot_bits;
+    if (s_lock != NULL) xSemaphoreGive(s_lock);
 }
 
 void audio_in_close(void)

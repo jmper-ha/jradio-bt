@@ -300,6 +300,24 @@ static void handle_scan(const jbt_frame_t *frame)
     if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, result);
 }
 
+static void handle_bus(const jbt_frame_t *frame)
+{
+    jbt_reader_t reader;
+    jbt_reader_init(&reader, frame->payload, frame->len);
+    uint8_t bus;
+    uint8_t slot_bits;
+    jbt_result_t result = JBT_RESULT_BAD_ARG;
+    if (jbt_get_u8(&reader, &bus) && jbt_get_u8(&reader, &slot_bits) &&
+        bus <= JBT_SINK_BUS_FOLLOW && (slot_bits == 16U || slot_bits == 32U)) {
+        audio_out_set_bus(bus == JBT_SINK_BUS_FOLLOW, slot_bits);
+        audio_in_set_slot_bits(slot_bits);
+        ESP_LOGI(TAG, "bus: %s, %u-bit slots", bus == JBT_SINK_BUS_FOLLOW ? "follow" : "drive",
+                 slot_bits);
+        result = JBT_RESULT_OK;
+    }
+    if (frame->flags & JBT_FLAG_WANT_ACK) (void)jbt_link_ack(frame->seq, result);
+}
+
 static void handle_i2s_format(const jbt_frame_t *frame)
 {
     jbt_reader_t reader;
@@ -406,6 +424,7 @@ static void on_frame(const jbt_frame_t *frame, void *context)
         return;
     case JBT_MSG_SCAN: handle_scan(frame); return;
     case JBT_MSG_I2S_FORMAT: handle_i2s_format(frame); return;
+    case JBT_MSG_BUS: handle_bus(frame); return;
     case JBT_MSG_PASSTHROUGH: handle_passthrough(frame); return;
     case JBT_MSG_SET_VOLUME: handle_set_volume(frame); return;
     case JBT_MSG_COVER_GET: handle_cover_get(frame); return;

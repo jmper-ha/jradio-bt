@@ -30,6 +30,7 @@ how to wire it, in the [hardware notes](https://github.com/jmper-ha/jradio/blob/
 | GPIO 26 | GPIO 18 (BCLK) | the shared I2S bus, 33-47 ohm in series at each end |
 | GPIO 25 | GPIO 17 (LRCK) | |
 | GPIO 22 | GPIO 16 (DOUT) | the same wire goes on to the DAC's DIN |
+| GPIO 23 | any free pin, `bt_din` | optional: sound through the S3, through 33-47 Ω |
 | GND | GND | |
 
 **On a WROVER module** pins 16 and 17 belong to the PSRAM, so the UART to

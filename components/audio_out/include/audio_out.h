@@ -30,6 +30,11 @@ void audio_out_release(void);
 
 bool audio_out_is_claimed(void);
 
+/* For the next claim: whether the host clocks the bus and takes the samples on
+ * a line of their own (see JBT_SINK_BUS_FOLLOW), and the width of its slots.
+ * A follower also leaves the volume and the meter to the host. */
+void audio_out_set_bus(bool follow, uint8_t slot_bits);
+
 /* The stream's format, from the codec negotiation. Reconfigures a claimed
  * channel in place; remembered for the next claim otherwise. */
 esp_err_t audio_out_set_format(uint32_t sample_rate, uint8_t channels);

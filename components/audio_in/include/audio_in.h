@@ -29,6 +29,9 @@ esp_err_t audio_in_open(void);
 /* Stops reading and returns the pins to plain inputs. Safe when closed. */
 void audio_in_close(void);
 
+/* The width of the bus's slots, 16 or 32, for the next open. */
+void audio_in_set_slot_bits(uint8_t slot_bits);
+
 bool audio_in_is_open(void);
 
 /* What the host is clocking. The reader reconfigures its slot width and
