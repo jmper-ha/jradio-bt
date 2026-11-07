@@ -29,8 +29,8 @@ how to wire it, in the [hardware notes](https://github.com/jmper-ha/jradio/blob/
 | GPIO 16 (RX) | GPIO 13 | |
 | GPIO 26 | GPIO 18 (BCLK) | the shared I2S bus, 33-47 ohm in series at each end |
 | GPIO 25 | GPIO 17 (LRCK) | |
-| GPIO 22 | GPIO 16 (DOUT) | the I2S data line, from the same S3 pin to the DAC's DIN: the module takes the speaker's sound from it, and without GPIO 23 it also puts the phone's sound on it for the DAC |
-| GPIO 23 | any free pin, `bt_din` | optional: sound through the S3, through 33-47 Ω |
+| GPIO 22 | GPIO 16 (DOUT) | the I2S data line, from the same S3 pin to the DAC's DIN. Without GPIO 23 always needed (the phone's sound to the DAC), with GPIO 23 only for sending to a speaker |
+| GPIO 23 | any free pin, `bt_din` | optional: the phone's sound through the S3, through 33-47 Ω; firmware 1.2.0 |
 | GND | GND | |
 
 **On a WROVER module** pins 16 and 17 belong to the PSRAM, so the UART to
