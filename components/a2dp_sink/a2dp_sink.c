@@ -10,6 +10,7 @@
 #include "esp_bt_defs.h"
 #include "esp_check.h"
 #include "esp_gap_bt_api.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -426,7 +427,12 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         const bool started = param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED;
         if (started) s_streamed = true;
         audio_out_stream(started);
-        ESP_LOGI(TAG, "audio %s", started ? "started" : "suspended");
+        /* The memory beside it, because the audio ring is the one buffer here
+         * worth growing and there is no PSRAM to grow it into: this is the
+         * moment the stack has taken all it will for a playing stream. */
+        ESP_LOGI(TAG, "audio %s; internal free %u, largest %u", started ? "started" : "suspended",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         /* And this is the transport state, reported as such. The comment here
          * used to claim AVRCP covered it - it does not: AVRCP tells us only
          * when it notifies, and a phone that starts playing without a

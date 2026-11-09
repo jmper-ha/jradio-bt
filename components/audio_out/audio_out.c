@@ -15,11 +15,18 @@
 
 static const char *TAG = "audio_out";
 
-/* About 90 ms of 44.1 kHz stereo. Enough to ride out the Bluetooth stack's
- * scheduling jitter; small enough that a track change is not heard late.
- * Internal RAM: there is no PSRAM on this module. */
-#define AUDIO_RING_SIZE (16U * 1024U)
-#define AUDIO_PREFETCH (AUDIO_RING_SIZE / 4U)
+/* About 186 ms of 44.1 kHz stereo, in internal RAM: there is no PSRAM on
+ * this module. 16 KB was too little both ways - a phone that stops sending
+ * for a moment empties it, and then sends what it owes in one burst that a
+ * ring half full again could not take: on the bench, a walk behind a wall
+ * left as much refused as ran dry. With a phone playing 96 KB was free and
+ * the largest block 51 KB, so the extra 16 KB is affordable. */
+#define AUDIO_RING_SIZE (32U * 1024U)
+/* Half the ring before the writer starts: about 93 ms to ride out a gap in
+ * what the phone sends, and as much room left above it for the burst after
+ * it. A quarter of 16 KB - 23 ms - ran dry every ten seconds or so on a
+ * user's phone, each time a hole of silence the host's DAC clicked on. */
+#define AUDIO_PREFETCH (AUDIO_RING_SIZE / 2U)
 /* One DMA descriptor's worth per write, so the writer never holds more than
  * it can hand over at once. */
 #define AUDIO_CHUNK 960U
@@ -45,6 +52,14 @@ static volatile bool s_flush;
  * roughly how a phone expects its slider to feel - linear would sit loud
  * over most of its travel. */
 static volatile int32_t s_gain_q15 = 32767;
+/* How often the ring ran dry under a playing stream, and how much of the
+ * stream a full ring refused - both a hole in the sound, and neither one
+ * visible anywhere else: the bus carries silence either way. Counted since
+ * the module started, and said by the writer, not the Bluetooth task that
+ * fills the ring. */
+static uint32_t s_dry_count;
+static atomic_uint s_dropped_bytes;
+#define AUDIO_REPORT_MS 1000U
 /* Under the follower's 32-bit slots a chunk goes out as twice its bytes. */
 static int32_t s_wide[AUDIO_CHUNK / 2U];
 /* A write has to give up on a host that stopped clocking: a channel cannot be
@@ -149,6 +164,23 @@ static void audio_out_send(const uint8_t *chunk, size_t length)
                             pdMS_TO_TICKS(AUDIO_FOLLOW_WRITE_MS));
 }
 
+/* At most once a second, and only when a count moved since the last time. */
+static void audio_out_report(void)
+{
+    static uint32_t reported_ms;
+    static uint32_t reported_dry;
+    static unsigned int reported_dropped;
+    const uint32_t now = esp_log_timestamp();
+    if (now - reported_ms < AUDIO_REPORT_MS) return;
+    const unsigned int dropped = atomic_load_explicit(&s_dropped_bytes, memory_order_relaxed);
+    if (s_dry_count == reported_dry && dropped == reported_dropped) return;
+    reported_ms = now;
+    reported_dry = s_dry_count;
+    reported_dropped = dropped;
+    ESP_LOGW(TAG, "ring ran dry %u times, %u bytes refused when full", (unsigned)s_dry_count,
+             dropped);
+}
+
 static void audio_out_writer_task(void *arg)
 {
     (void)arg;
@@ -175,10 +207,13 @@ static void audio_out_writer_task(void *arg)
         uint8_t *chunk = xRingbufferReceiveUpTo(s_ring, &length, pdMS_TO_TICKS(50), AUDIO_CHUNK);
         if (chunk == NULL) {
             /* Ran dry: back to filling. Expected on pause, a defect while
-             * playing - counted by the stack's own stats, not here. */
+             * playing - and only that is counted: on the bench a pause was
+             * never counted, the stop reaching here before the ring ran out. */
+            if (s_claimed && s_streaming) ++s_dry_count;
             s_prefetching = true;
             continue;
         }
+        audio_out_report();
         /* Measured only when it is going to the DAC, and before the gain. A
          * host that takes the samples has its own meter and its own volume. */
         if (!s_follow) {
@@ -351,6 +386,7 @@ size_t audio_out_write(const uint8_t *pcm, size_t length)
 {
     if (!s_claimed || !s_streaming || s_ring == NULL) return length; /* nowhere to go: dropped */
     if (xRingbufferSend(s_ring, pcm, length, 0) != pdTRUE) {
+        atomic_fetch_add_explicit(&s_dropped_bytes, (unsigned int)length, memory_order_relaxed);
         return 0U;
     }
     return length;
