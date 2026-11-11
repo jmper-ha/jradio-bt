@@ -28,6 +28,12 @@ static const char *TAG = "a2dp_sink";
  * thumbnail a phone hands out is a 200x200 JPEG of ten to twenty KB. A cover
  * that would not fit is abandoned, and the track shows without one. */
 #define A2DP_COVER_MAX (48U * 1024U)
+/* The buffer grows by this as the picture arrives, rather than being taken
+ * at the cap at once: 48 KB in one block was there after a boot, but not
+ * after a turn as a source - the heap came back in pieces of 46 KB, every
+ * cover failed to allocate and the track showed none until a reboot
+ * (2026-11-11). A cover is 12-26 KB, so only that much has to be whole. */
+#define A2DP_COVER_STEP (4U * 1024U)
 #define A2DP_COVER_HANDLE_LEN 7U
 /* The attributes of one request arrive as separate events with nothing to
  * say which is the last - a phone leaves out what it does not know. So the
@@ -86,6 +92,7 @@ static bool s_cover_seen;
 static uint8_t s_cover_handle[A2DP_COVER_HANDLE_LEN];
 static uint8_t *s_cover;
 static uint32_t s_cover_size;
+static uint32_t s_cover_capacity;
 static uint32_t s_cover_hash;
 static SemaphoreHandle_t s_cover_lock;
 
@@ -273,6 +280,7 @@ static void a2dp_cover_drop(void)
     free(s_cover);
     s_cover = NULL;
     s_cover_size = 0U;
+    s_cover_capacity = 0U;
     s_cover_hash = 0U;
     xSemaphoreGive(s_cover_lock);
     memset(s_cover_handle, 0, sizeof(s_cover_handle));
@@ -311,13 +319,23 @@ static void a2dp_cover_data(const uint8_t *data, uint16_t length, bool final, bo
     bool failed = !ok;
     xSemaphoreTake(s_cover_lock, portMAX_DELAY);
     if (!failed && length > 0U) {
-        if (s_cover == NULL) {
-            s_cover = malloc(A2DP_COVER_MAX);
-            if (s_cover == NULL) failed = true;
-        }
-        if (!failed && s_cover_size + length > A2DP_COVER_MAX) {
+        const uint32_t needed = s_cover_size + length;
+        if (needed > A2DP_COVER_MAX) {
             ESP_LOGW(TAG, "cover larger than %u bytes; dropped", (unsigned)A2DP_COVER_MAX);
             failed = true;
+        } else if (needed > s_cover_capacity) {
+            uint32_t capacity = (needed + A2DP_COVER_STEP - 1U) / A2DP_COVER_STEP * A2DP_COVER_STEP;
+            if (capacity > A2DP_COVER_MAX) capacity = A2DP_COVER_MAX;
+            uint8_t *grown = realloc(s_cover, capacity);
+            if (grown == NULL) {
+                ESP_LOGW(TAG, "no room for a %u-byte cover (largest block %u); dropped",
+                         (unsigned)capacity,
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                failed = true;
+            } else {
+                s_cover = grown;
+                s_cover_capacity = capacity;
+            }
         }
         if (!failed) {
             memcpy(&s_cover[s_cover_size], data, length);
@@ -328,6 +346,7 @@ static void a2dp_cover_data(const uint8_t *data, uint16_t length, bool final, bo
         free(s_cover);
         s_cover = NULL;
         s_cover_size = 0U;
+        s_cover_capacity = 0U;
     }
     if (final && !failed) s_cover_hash = a2dp_hash(s_cover, s_cover_size);
     const uint32_t size = s_cover_size;
