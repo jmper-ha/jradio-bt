@@ -94,6 +94,13 @@ static uint8_t *s_cover;
 static uint32_t s_cover_size;
 static uint32_t s_cover_capacity;
 static uint32_t s_cover_hash;
+/* A cover dropped for want of memory, to be asked for again when the stream
+ * starts. It arrives while the phone is still connecting, and the stack is
+ * at its fullest then: on the bench a 24 KB cover met a largest block of
+ * 14.8 KB, and five seconds later, with sound playing, it was 47 KB - but
+ * the handle was not asked for again, and the track had no picture
+ * (2026-11-16). */
+static bool s_cover_short;
 static SemaphoreHandle_t s_cover_lock;
 
 static uint8_t a2dp_next_transaction(void)
@@ -332,6 +339,7 @@ static void a2dp_cover_data(const uint8_t *data, uint16_t length, bool final, bo
                          (unsigned)capacity,
                          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
                 failed = true;
+                s_cover_short = true;
             } else {
                 s_cover = grown;
                 s_cover_capacity = capacity;
@@ -463,6 +471,13 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         a2dp_note_playing(started);
         if (s_listener.play != NULL) s_listener.play(started ? JBT_PLAY_PLAYING : JBT_PLAY_PAUSED);
         if (s_connected) (void)esp_avrc_ct_send_get_play_status_cmd(a2dp_next_transaction());
+        /* The handle of what is playing, as when the channel opens: the
+         * failed fetch forgot it, so it is fetched afresh. */
+        if (started && s_cover_short && s_cover_channel && !s_cover_fetching) {
+            s_cover_short = false;
+            ESP_LOGI(TAG, "asking for the cover again, now that the stream has started");
+            (void)esp_avrc_ct_send_metadata_cmd(a2dp_next_transaction(), ESP_AVRC_MD_ATTR_COVER_ART);
+        }
         break;
     }
     case ESP_A2D_AUDIO_CFG_EVT: {
