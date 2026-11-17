@@ -25,16 +25,27 @@ static const char *TAG = "a2dp_sink";
      ESP_AVRC_MD_ATTR_GENRE | ESP_AVRC_MD_ATTR_PLAYING_TIME | ESP_AVRC_MD_ATTR_TRACK_NUM |         \
      ESP_AVRC_MD_ATTR_COVER_ART)
 /* The most cover the module keeps: this chip has no PSRAM, and the linked
- * thumbnail a phone hands out is a 200x200 JPEG of ten to twenty KB. A cover
- * that would not fit is abandoned, and the track shows without one. */
+ * thumbnail a phone hands out is a 200x200 JPEG - 7 to 48 KB from Yandex
+ * Music. A cover that would not fit is abandoned, and the track shows
+ * without one. */
 #define A2DP_COVER_MAX (48U * 1024U)
-/* The buffer grows by this as the picture arrives, rather than being taken
- * at the cap at once: 48 KB in one block was there after a boot, but not
- * after a turn as a source - the heap came back in pieces of 46 KB, every
- * cover failed to allocate and the track showed none until a reboot
- * (2026-11-11). A cover is 12-26 KB, so only that much has to be whole. */
+/* The picture is kept in pieces of this size, none of them next to another.
+ * One buffer grown with realloc wanted the whole cover in one block, and a
+ * second copy while it moved: after a few minutes of a phone playing the
+ * largest block was 21-28 KB of some 55 KB free, and every cover past that
+ * was dropped - pictures came and went with their size (2026-11-17). */
 #define A2DP_COVER_STEP (4U * 1024U)
+#define A2DP_COVER_PIECES (A2DP_COVER_MAX / A2DP_COVER_STEP)
 #define A2DP_COVER_HANDLE_LEN 7U
+/* How long after a track change the cover is fetched once more. An iPhone
+ * playing Yandex Music named the previous track's handle in the new track's
+ * metadata, and when no second description followed, the old picture stayed
+ * on the screen for the whole track (2026-11-17). */
+#define A2DP_COVER_RECHECK_US (3 * 1000 * 1000)
+/* While the phone names no picture yet - an iPhone answers with an empty
+ * handle until it has one - it is asked again this many times, a recheck
+ * apart. */
+#define A2DP_COVER_RECHECKS 5U
 /* The attributes of one request arrive as separate events with nothing to
  * say which is the last - a phone leaves out what it does not know. So the
  * track is reported when they have stopped coming for this long. */
@@ -90,9 +101,8 @@ static bool s_cover_fetching;
 /* Whether this track's metadata named a picture at all. */
 static bool s_cover_seen;
 static uint8_t s_cover_handle[A2DP_COVER_HANDLE_LEN];
-static uint8_t *s_cover;
+static uint8_t *s_cover[A2DP_COVER_PIECES];
 static uint32_t s_cover_size;
-static uint32_t s_cover_capacity;
 static uint32_t s_cover_hash;
 /* A cover dropped for want of memory, to be asked for again when the stream
  * starts. It arrives while the phone is still connecting, and the stack is
@@ -101,6 +111,30 @@ static uint32_t s_cover_hash;
  * the handle was not asked for again, and the track had no picture
  * (2026-11-16). */
 static bool s_cover_short;
+/* The phone said it serves covers. The channel can close under a connected
+ * phone - the stack ran out of memory once and L2CAP dropped it - and was
+ * opened only on connecting, so no track had a picture again until the
+ * phone reconnected or the module was reset (2026-11-17). */
+static bool s_cover_offered;
+/* Why the next handle is fetched even when it is the one held: a new track
+ * - the phone may keep one handle and change what is behind it - or the
+ * recheck, which leaves the picture up while it fetches, so the same cover
+ * does not blink. */
+typedef enum {
+    A2DP_COVER_REUSE = 0,
+    A2DP_COVER_REFETCH_TRACK,
+    A2DP_COVER_REFETCH_QUIET,
+} a2dp_cover_refetch_t;
+static volatile a2dp_cover_refetch_t s_cover_refetch;
+/* A handle that came while another picture was being fetched, fetched next. */
+static uint8_t s_cover_pending[A2DP_COVER_HANDLE_LEN];
+static bool s_cover_pending_set;
+static esp_timer_handle_t s_cover_recheck_timer;
+static unsigned s_cover_rechecks;
+/* The last request asked for the cover alone, from the recheck: the track
+ * it settles is the one already told, and telling it again put each track
+ * on the host four times while an iPhone readied its picture. */
+static volatile bool s_cover_only_asked;
 static SemaphoreHandle_t s_cover_lock;
 
 static uint8_t a2dp_next_transaction(void)
@@ -136,10 +170,16 @@ static void a2dp_settle_fired(void *arg)
     copy = s_track;
     const bool cover_seen = s_cover_seen;
     xSemaphoreGive(s_track_lock);
-    if (s_listener.track != NULL) s_listener.track(&copy);
+    if (s_listener.track != NULL && !s_cover_only_asked) s_listener.track(&copy);
     /* Metadata that named no picture: this track has none, and the one
-     * held is the previous track's. */
-    if (!cover_seen) a2dp_cover_drop();
+     * held is the previous track's. It may only have none yet, so the phone
+     * is asked again a while. */
+    if (!cover_seen) {
+        a2dp_cover_drop();
+        if (s_cover_channel && s_cover_rechecks > 0U && s_cover_rechecks < A2DP_COVER_RECHECKS) {
+            (void)esp_timer_start_once(s_cover_recheck_timer, A2DP_COVER_RECHECK_US);
+        }
+    }
 }
 
 static void a2dp_poll_fired(void *arg)
@@ -203,7 +243,22 @@ static void a2dp_request_metadata(void)
     memset(&s_track, 0, sizeof(s_track));
     s_cover_seen = false;
     xSemaphoreGive(s_track_lock);
+    s_cover_refetch = A2DP_COVER_REFETCH_TRACK;
+    s_cover_rechecks = 0U;
+    s_cover_only_asked = false;
+    (void)esp_timer_stop(s_cover_recheck_timer);
+    (void)esp_timer_start_once(s_cover_recheck_timer, A2DP_COVER_RECHECK_US);
     (void)esp_avrc_ct_send_metadata_cmd(a2dp_next_transaction(), A2DP_METADATA_MASK);
+}
+
+static void a2dp_cover_recheck_fired(void *arg)
+{
+    (void)arg;
+    if (!s_connected || !s_cover_channel) return;
+    ++s_cover_rechecks;
+    s_cover_refetch = A2DP_COVER_REFETCH_QUIET;
+    s_cover_only_asked = true;
+    (void)esp_avrc_ct_send_metadata_cmd(a2dp_next_transaction(), ESP_AVRC_MD_ATTR_COVER_ART);
 }
 
 static void a2dp_register_notifications(void)
@@ -264,30 +319,65 @@ static void a2dp_notification(uint8_t event_id, const esp_avrc_rn_param_t *param
     }
 }
 
-/* FNV-1a over the bytes: the host caches decoded covers by this, so a
- * podcast whose every chapter carries the same picture is decoded once. */
-static uint32_t a2dp_hash(const uint8_t *data, size_t length)
+/* FNV-1a over the bytes, in a2dp_cover_hash(): the host caches decoded
+ * covers by this, so a podcast whose every chapter carries the same picture
+ * is decoded once. */
+static jbt_image_t a2dp_cover_kind(void)
 {
-    uint32_t hash = 2166136261U;
-    for (size_t i = 0; i < length; ++i) hash = (hash ^ data[i]) * 16777619U;
-    return hash;
-}
-
-static jbt_image_t a2dp_cover_kind(const uint8_t *data, size_t length)
-{
-    if (length >= 8U && data[0] == 0x89U && data[1] == 'P') return JBT_IMAGE_PNG;
-    if (length >= 2U && data[0] == 'B' && data[1] == 'M') return JBT_IMAGE_BMP;
+    const uint8_t *data = s_cover[0];
+    if (data == NULL) return JBT_IMAGE_JPEG;
+    if (s_cover_size >= 8U && data[0] == 0x89U && data[1] == 'P') return JBT_IMAGE_PNG;
+    if (s_cover_size >= 2U && data[0] == 'B' && data[1] == 'M') return JBT_IMAGE_BMP;
     return JBT_IMAGE_JPEG;
 }
 
-static void a2dp_cover_drop(void)
+static uint32_t a2dp_cover_hash(void)
+{
+    uint32_t hash = 2166136261U;
+    for (uint32_t at = 0U; at < s_cover_size; at += A2DP_COVER_STEP) {
+        const uint32_t left = s_cover_size - at;
+        const uint8_t *piece = s_cover[at / A2DP_COVER_STEP];
+        for (uint32_t i = 0U; i < (left < A2DP_COVER_STEP ? left : A2DP_COVER_STEP); ++i) {
+            hash = (hash ^ piece[i]) * 16777619U;
+        }
+    }
+    return hash;
+}
+
+static void a2dp_cover_free(void)
+{
+    for (size_t i = 0U; i < A2DP_COVER_PIECES; ++i) {
+        free(s_cover[i]);
+        s_cover[i] = NULL;
+    }
+    s_cover_size = 0U;
+}
+
+/* Appends to the pieces, taking a new one as each fills. */
+static bool a2dp_cover_append(const uint8_t *data, uint32_t length)
+{
+    while (length > 0U) {
+        const uint32_t index = s_cover_size / A2DP_COVER_STEP;
+        const uint32_t at = s_cover_size % A2DP_COVER_STEP;
+        if (s_cover[index] == NULL) {
+            s_cover[index] = malloc(A2DP_COVER_STEP);
+            if (s_cover[index] == NULL) return false;
+        }
+        const uint32_t room = A2DP_COVER_STEP - at;
+        const uint32_t n = length < room ? length : room;
+        memcpy(&s_cover[index][at], data, n);
+        s_cover_size += n;
+        data += n;
+        length -= n;
+    }
+    return true;
+}
+
+static void a2dp_cover_drop_quietly(bool quiet)
 {
     xSemaphoreTake(s_cover_lock, portMAX_DELAY);
-    const bool had = s_cover != NULL || s_cover_fetching;
-    free(s_cover);
-    s_cover = NULL;
-    s_cover_size = 0U;
-    s_cover_capacity = 0U;
+    const bool had = !quiet && (s_cover[0] != NULL || s_cover_fetching);
+    a2dp_cover_free();
     s_cover_hash = 0U;
     xSemaphoreGive(s_cover_lock);
     memset(s_cover_handle, 0, sizeof(s_cover_handle));
@@ -298,22 +388,51 @@ static void a2dp_cover_drop(void)
     if (had && s_listener.cover != NULL) s_listener.cover(0U, JBT_IMAGE_JPEG, 0U);
 }
 
+static void a2dp_cover_drop(void)
+{
+    s_cover_pending_set = false;
+    a2dp_cover_drop_quietly(false);
+}
+
 /* A handle came with the metadata: fetch the picture when it is a new one.
  * The buffer is allocated at the first chunk, whole, and the fetch gives up
  * rather than growing past the cap. */
 static void a2dp_cover_handle(const uint8_t *handle, int length)
 {
-    if (!s_cover_channel || s_cover_fetching || length != (int)A2DP_COVER_HANDLE_LEN) return;
-    if (memcmp(handle, s_cover_handle, A2DP_COVER_HANDLE_LEN) == 0 && s_cover != NULL) {
+    if (!s_cover_channel && s_cover_offered && s_connected) {
+        /* Opened again; once it is, the channel asks for this handle. */
+        ESP_LOGI(TAG, "cover art channel closed under the phone; opening it again");
+        (void)esp_avrc_ct_cover_art_connect(ESP_AVRC_CA_MTU_MAX);
+        return;
+    }
+    if (!s_cover_channel || length != (int)A2DP_COVER_HANDLE_LEN) return;
+    const a2dp_cover_refetch_t refetch = s_cover_refetch;
+    s_cover_refetch = A2DP_COVER_REUSE;
+    ESP_LOGI(TAG, "cover handle %.7s%s", (const char *)handle,
+             refetch == A2DP_COVER_REFETCH_TRACK   ? " (new track)"
+             : refetch == A2DP_COVER_REFETCH_QUIET ? " (recheck)"
+                                                   : "");
+    if (s_cover_fetching) {
+        memcpy(s_cover_pending, handle, A2DP_COVER_HANDLE_LEN);
+        s_cover_pending_set = true;
+        return;
+    }
+    if (refetch == A2DP_COVER_REUSE && memcmp(handle, s_cover_handle, A2DP_COVER_HANDLE_LEN) == 0 &&
+        s_cover[0] != NULL) {
         /* The same picture again - a chapter change, or the phone repeating
          * itself - is told to the host again too, since it may have thrown
          * its copy away with the track. */
         if (s_listener.cover != NULL) {
-            s_listener.cover(s_cover_size, a2dp_cover_kind(s_cover, s_cover_size), s_cover_hash);
+            s_listener.cover(s_cover_size, a2dp_cover_kind(), s_cover_hash);
         }
         return;
     }
-    a2dp_cover_drop();
+    s_cover_pending_set = false;
+    /* The handle held, fetched again, keeps its picture up until the new
+     * bytes replace it: an iPhone describes a track twice, and the screen
+     * blanked between the two. */
+    const bool same = memcmp(handle, s_cover_handle, A2DP_COVER_HANDLE_LEN) == 0 && s_cover[0] != NULL;
+    a2dp_cover_drop_quietly(refetch == A2DP_COVER_REFETCH_QUIET || same);
     memcpy(s_cover_handle, handle, A2DP_COVER_HANDLE_LEN);
     if (esp_avrc_ct_cover_art_get_linked_thumbnail(s_cover_handle) == ESP_OK) {
         s_cover_fetching = true;
@@ -326,40 +445,22 @@ static void a2dp_cover_data(const uint8_t *data, uint16_t length, bool final, bo
     bool failed = !ok;
     xSemaphoreTake(s_cover_lock, portMAX_DELAY);
     if (!failed && length > 0U) {
-        const uint32_t needed = s_cover_size + length;
-        if (needed > A2DP_COVER_MAX) {
+        if (s_cover_size + length > A2DP_COVER_MAX) {
             ESP_LOGW(TAG, "cover larger than %u bytes; dropped", (unsigned)A2DP_COVER_MAX);
             failed = true;
-        } else if (needed > s_cover_capacity) {
-            uint32_t capacity = (needed + A2DP_COVER_STEP - 1U) / A2DP_COVER_STEP * A2DP_COVER_STEP;
-            if (capacity > A2DP_COVER_MAX) capacity = A2DP_COVER_MAX;
-            uint8_t *grown = realloc(s_cover, capacity);
-            if (grown == NULL) {
-                ESP_LOGW(TAG, "no room for a %u-byte cover (largest block %u); dropped",
-                         (unsigned)capacity,
-                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-                failed = true;
-                s_cover_short = true;
-            } else {
-                s_cover = grown;
-                s_cover_capacity = capacity;
-            }
-        }
-        if (!failed) {
-            memcpy(&s_cover[s_cover_size], data, length);
-            s_cover_size += length;
+        } else if (!a2dp_cover_append(data, length)) {
+            ESP_LOGW(TAG, "no room for a cover past %u bytes (free %u); dropped",
+                     (unsigned)s_cover_size,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+            failed = true;
+            s_cover_short = true;
         }
     }
-    if (failed) {
-        free(s_cover);
-        s_cover = NULL;
-        s_cover_size = 0U;
-        s_cover_capacity = 0U;
-    }
-    if (final && !failed) s_cover_hash = a2dp_hash(s_cover, s_cover_size);
+    if (failed) a2dp_cover_free();
+    if (final && !failed) s_cover_hash = a2dp_cover_hash();
     const uint32_t size = s_cover_size;
     const uint32_t hash = s_cover_hash;
-    const jbt_image_t kind = s_cover != NULL ? a2dp_cover_kind(s_cover, s_cover_size) : JBT_IMAGE_JPEG;
+    const jbt_image_t kind = a2dp_cover_kind();
     xSemaphoreGive(s_cover_lock);
     if (failed || final) {
         s_cover_fetching = false;
@@ -371,6 +472,12 @@ static void a2dp_cover_data(const uint8_t *data, uint16_t length, bool final, bo
             ESP_LOGI(TAG, "cover %u bytes, hash %08x", (unsigned)size, (unsigned)hash);
         }
         if (s_listener.cover != NULL) s_listener.cover(failed ? 0U : size, kind, failed ? 0U : hash);
+        /* What came while this one was fetched is the newer word. */
+        if (s_cover_pending_set) {
+            s_cover_pending_set = false;
+            s_cover_refetch = A2DP_COVER_REFETCH_QUIET;
+            a2dp_cover_handle(s_cover_pending, (int)A2DP_COVER_HANDLE_LEN);
+        }
     }
 }
 
@@ -379,10 +486,17 @@ size_t a2dp_sink_cover_read(uint32_t offset, uint8_t *out, size_t max, uint32_t 
     if (s_cover_lock == NULL) return 0U;
     xSemaphoreTake(s_cover_lock, portMAX_DELAY);
     size_t n = 0U;
-    if (s_cover != NULL && s_cover_hash != 0U && offset < s_cover_size) {
+    if (s_cover_hash != 0U && offset < s_cover_size) {
         n = s_cover_size - offset;
         if (n > max) n = max;
-        memcpy(out, &s_cover[offset], n);
+        // The pieces are apart, so a read across a seam is two copies.
+        for (size_t done = 0U; done < n;) {
+            const uint32_t at = offset + (uint32_t)done;
+            const uint32_t in_piece = A2DP_COVER_STEP - at % A2DP_COVER_STEP;
+            const size_t take = n - done < in_piece ? n - done : in_piece;
+            memcpy(&out[done], &s_cover[at / A2DP_COVER_STEP][at % A2DP_COVER_STEP], take);
+            done += take;
+        }
     }
     if (hash != NULL) *hash = s_cover_hash;
     xSemaphoreGive(s_cover_lock);
@@ -442,6 +556,7 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             a2dp_note_playing(false);
             memset(s_peer, 0, sizeof(s_peer));
             s_cover_channel = false;
+            s_cover_offered = false;
             a2dp_cover_drop();
         }
         ESP_LOGI(TAG, "connection %d %02X:%02X:%02X:%02X:%02X:%02X", param->conn_stat.state,
@@ -552,6 +667,12 @@ static void a2dp_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_
         case ESP_AVRC_MD_ATTR_PLAYING_TIME: s_track.duration_ms = (uint32_t)strtoul(text, NULL, 10); break;
         case ESP_AVRC_MD_ATTR_TRACK_NUM: s_track.track_no = (uint32_t)strtoul(text, NULL, 10); break;
         case ESP_AVRC_MD_ATTR_COVER_ART:
+            /* An iPhone names the attribute with nothing in it while the
+             * picture is not ready; that kept the last track's cover up. */
+            if (length != (int)A2DP_COVER_HANDLE_LEN) {
+                ESP_LOGI(TAG, "no cover handle yet (%d bytes)", length);
+                break;
+            }
             s_cover_seen = true;
             xSemaphoreGive(s_track_lock);
             a2dp_cover_handle((const uint8_t *)text, length);
@@ -583,6 +704,7 @@ static void a2dp_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_
     case ESP_AVRC_CT_REMOTE_FEATURES_EVT:
         if (param->rmt_feats.tg_feat_flag & ESP_AVRC_FEAT_FLAG_TG_COVER_ART) {
             ESP_LOGI(TAG, "phone offers cover art");
+            s_cover_offered = true;
             (void)esp_avrc_ct_cover_art_connect(ESP_AVRC_CA_MTU_MAX);
         }
         break;
@@ -664,6 +786,10 @@ static esp_err_t a2dp_sink_prepare(void)
     ESP_RETURN_ON_ERROR(esp_timer_create(&poll, &s_poll_timer), TAG, "poll timer");
     const esp_timer_create_args_t nudge = {.callback = a2dp_nudge_fired, .name = "nudge"};
     ESP_RETURN_ON_ERROR(esp_timer_create(&nudge, &s_nudge_timer), TAG, "nudge timer");
+    const esp_timer_create_args_t recheck = {.callback = a2dp_cover_recheck_fired,
+                                             .name = "cover_recheck"};
+    ESP_RETURN_ON_ERROR(esp_timer_create(&recheck, &s_cover_recheck_timer), TAG,
+                        "cover recheck timer");
     const esp_timer_create_args_t retell = {.callback = a2dp_volume_timer_fired, .name = "vol_retell"};
     ESP_RETURN_ON_ERROR(esp_timer_create(&retell, &s_volume_timer), TAG, "volume timer");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_volume_timer, A2DP_VOLUME_RETELL_US), TAG,
