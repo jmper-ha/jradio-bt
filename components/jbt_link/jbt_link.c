@@ -153,7 +153,17 @@ static void jbt_link_task(void *arg)
     (void)arg;
     uint8_t chunk[256];
     while (true) {
-        const int n = uart_read_bytes(JBT_UART, chunk, sizeof(chunk), pdMS_TO_TICKS(100));
+        /* One byte waited for, then whatever has come with it. Asked for a
+         * chunk, the read waited for 256 bytes or 100 ms, and a request is
+         * a dozen: every one sat out the timeout, and a cover crossed at
+         * 3 KB/s, 48 KB in 15 s (2026-11-19). */
+        int n = uart_read_bytes(JBT_UART, chunk, 1U, portMAX_DELAY);
+        size_t waiting = 0U;
+        if (n == 1 && uart_get_buffered_data_len(JBT_UART, &waiting) == ESP_OK && waiting > 0U) {
+            if (waiting > sizeof(chunk) - 1U) waiting = sizeof(chunk) - 1U;
+            const int more = uart_read_bytes(JBT_UART, &chunk[1], waiting, 0);
+            if (more > 0) n += more;
+        }
         for (int i = 0; i < n; ++i) {
             jbt_frame_t frame;
             if (jbt_decoder_feed(&s_decoder, chunk[i], &frame)) {

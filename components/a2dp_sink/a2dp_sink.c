@@ -116,10 +116,12 @@ static bool s_cover_short;
  * opened only on connecting, so no track had a picture again until the
  * phone reconnected or the module was reset (2026-11-17). */
 static bool s_cover_offered;
-/* Why the next handle is fetched even when it is the one held: a new track
- * - the phone may keep one handle and change what is behind it - or the
- * recheck, which leaves the picture up while it fetches, so the same cover
- * does not blink. */
+/* The channel was open on this connection and closed under it. Not merely
+ * offered: on connecting, the first track change comes before the channel
+ * has opened, and a second connect went out after the first. */
+static bool s_cover_lost;
+/* What asked for the next handle: a new track, or the recheck, which leaves
+ * the picture up while a new one is fetched, so the screen does not blink. */
 typedef enum {
     A2DP_COVER_REUSE = 0,
     A2DP_COVER_REFETCH_TRACK,
@@ -136,6 +138,13 @@ static unsigned s_cover_rechecks;
  * on the host four times while an iPhone readied its picture. */
 static volatile bool s_cover_only_asked;
 static SemaphoreHandle_t s_cover_lock;
+/* The host has read the whole picture, and its bytes are freed: the handle
+ * and the hash stay, and a later read fetches it from the phone again. Held,
+ * a 48 KB cover left the stack about 10 KB, and its 10 KB buffer for the
+ * cover-art channel found no block - the phone closed the channel, and no
+ * track had a picture after that (a user's Samsung S24 FE, 2026-11-18).
+ * Asked again only when the host takes the picture down and puts it back. */
+static volatile bool s_cover_released;
 
 static uint8_t a2dp_next_transaction(void)
 {
@@ -239,6 +248,15 @@ static void a2dp_note_playing(bool playing)
 
 static void a2dp_request_metadata(void)
 {
+    /* A closed channel is opened again on the track change, not on the
+     * picture's handle: an iPhone names no handle at all while the channel
+     * is down, so 1.2.4 waited for one that never came, and the rest of the
+     * evening had no covers (2026-11-18). */
+    if (!s_cover_channel && s_cover_lost && s_connected) {
+        s_cover_lost = false;
+        ESP_LOGI(TAG, "cover art channel closed under the phone; opening it again");
+        (void)esp_avrc_ct_cover_art_connect(ESP_AVRC_CA_MTU_MAX);
+    }
     xSemaphoreTake(s_track_lock, portMAX_DELAY);
     memset(&s_track, 0, sizeof(s_track));
     s_cover_seen = false;
@@ -376,9 +394,10 @@ static bool a2dp_cover_append(const uint8_t *data, uint32_t length)
 static void a2dp_cover_drop_quietly(bool quiet)
 {
     xSemaphoreTake(s_cover_lock, portMAX_DELAY);
-    const bool had = !quiet && (s_cover[0] != NULL || s_cover_fetching);
+    const bool had = !quiet && (s_cover[0] != NULL || s_cover_fetching || s_cover_released);
     a2dp_cover_free();
     s_cover_hash = 0U;
+    s_cover_released = false;
     xSemaphoreGive(s_cover_lock);
     memset(s_cover_handle, 0, sizeof(s_cover_handle));
     s_cover_fetching = false;
@@ -399,12 +418,6 @@ static void a2dp_cover_drop(void)
  * rather than growing past the cap. */
 static void a2dp_cover_handle(const uint8_t *handle, int length)
 {
-    if (!s_cover_channel && s_cover_offered && s_connected) {
-        /* Opened again; once it is, the channel asks for this handle. */
-        ESP_LOGI(TAG, "cover art channel closed under the phone; opening it again");
-        (void)esp_avrc_ct_cover_art_connect(ESP_AVRC_CA_MTU_MAX);
-        return;
-    }
     if (!s_cover_channel || length != (int)A2DP_COVER_HANDLE_LEN) return;
     const a2dp_cover_refetch_t refetch = s_cover_refetch;
     s_cover_refetch = A2DP_COVER_REUSE;
@@ -412,13 +425,23 @@ static void a2dp_cover_handle(const uint8_t *handle, int length)
              refetch == A2DP_COVER_REFETCH_TRACK   ? " (new track)"
              : refetch == A2DP_COVER_REFETCH_QUIET ? " (recheck)"
                                                    : "");
+    /* The handle held is the picture held: it is never fetched again. 1.2.4
+     * fetched it again on the track's second description and on each
+     * recheck, three times a cover; an iPhone's covers are 30-48 KB, and
+     * that churn left the stack's 10 KB buffer no block to come from, so the
+     * phone closed the channel (2026-11-18). An iPhone numbers every picture
+     * anew, and one that named the last track's handle names the new one by
+     * the recheck. */
+    const bool held = memcmp(handle, s_cover_handle, A2DP_COVER_HANDLE_LEN) == 0;
     if (s_cover_fetching) {
+        if (held) return;
         memcpy(s_cover_pending, handle, A2DP_COVER_HANDLE_LEN);
         s_cover_pending_set = true;
         return;
     }
-    if (refetch == A2DP_COVER_REUSE && memcmp(handle, s_cover_handle, A2DP_COVER_HANDLE_LEN) == 0 &&
-        s_cover[0] != NULL) {
+    // Handed over: the host has it, and asks for it again if it wants it.
+    if (held && s_cover_released) return;
+    if (held && s_cover_hash != 0U) {
         /* The same picture again - a chapter change, or the phone repeating
          * itself - is told to the host again too, since it may have thrown
          * its copy away with the track. */
@@ -428,11 +451,7 @@ static void a2dp_cover_handle(const uint8_t *handle, int length)
         return;
     }
     s_cover_pending_set = false;
-    /* The handle held, fetched again, keeps its picture up until the new
-     * bytes replace it: an iPhone describes a track twice, and the screen
-     * blanked between the two. */
-    const bool same = memcmp(handle, s_cover_handle, A2DP_COVER_HANDLE_LEN) == 0 && s_cover[0] != NULL;
-    a2dp_cover_drop_quietly(refetch == A2DP_COVER_REFETCH_QUIET || same);
+    a2dp_cover_drop_quietly(refetch == A2DP_COVER_REFETCH_QUIET);
     memcpy(s_cover_handle, handle, A2DP_COVER_HANDLE_LEN);
     if (esp_avrc_ct_cover_art_get_linked_thumbnail(s_cover_handle) == ESP_OK) {
         s_cover_fetching = true;
@@ -469,7 +488,10 @@ static void a2dp_cover_data(const uint8_t *data, uint16_t length, bool final, bo
              * the same way. The next track's handle starts afresh. */
             memset(s_cover_handle, 0, sizeof(s_cover_handle));
         } else {
-            ESP_LOGI(TAG, "cover %u bytes, hash %08x", (unsigned)size, (unsigned)hash);
+            // The heap with it, to see what a cover costs the stack.
+            ESP_LOGI(TAG, "cover %u bytes, hash %08x; free %u, largest %u", (unsigned)size,
+                     (unsigned)hash, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         }
         if (s_listener.cover != NULL) s_listener.cover(failed ? 0U : size, kind, failed ? 0U : hash);
         /* What came while this one was fetched is the newer word. */
@@ -486,6 +508,22 @@ size_t a2dp_sink_cover_read(uint32_t offset, uint8_t *out, size_t max, uint32_t 
     if (s_cover_lock == NULL) return 0U;
     xSemaphoreTake(s_cover_lock, portMAX_DELAY);
     size_t n = 0U;
+    if (s_cover_released) {
+        /* Wanted again: the phone is asked which picture is up, and the same
+         * handle is fetched once more and announced. This read answers
+         * empty, and the host waits for the announcement. */
+        s_cover_released = false;
+        s_cover_hash = 0U;
+        xSemaphoreGive(s_cover_lock);
+        if (s_connected && s_cover_channel) {
+            ESP_LOGI(TAG, "cover wanted again; fetching it from the phone");
+            s_cover_refetch = A2DP_COVER_REFETCH_QUIET;
+            s_cover_only_asked = true;
+            (void)esp_avrc_ct_send_metadata_cmd(a2dp_next_transaction(), ESP_AVRC_MD_ATTR_COVER_ART);
+        }
+        if (hash != NULL) *hash = 0U;
+        return 0U;
+    }
     if (s_cover_hash != 0U && offset < s_cover_size) {
         n = s_cover_size - offset;
         if (n > max) n = max;
@@ -496,6 +534,11 @@ size_t a2dp_sink_cover_read(uint32_t offset, uint8_t *out, size_t max, uint32_t 
             const size_t take = n - done < in_piece ? n - done : in_piece;
             memcpy(&out[done], &s_cover[at / A2DP_COVER_STEP][at % A2DP_COVER_STEP], take);
             done += take;
+        }
+        if (offset + n == s_cover_size) {
+            ESP_LOGI(TAG, "cover handed over; %u bytes freed", (unsigned)s_cover_size);
+            a2dp_cover_free();
+            s_cover_released = true;
         }
     }
     if (hash != NULL) *hash = s_cover_hash;
@@ -557,6 +600,7 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
             memset(s_peer, 0, sizeof(s_peer));
             s_cover_channel = false;
             s_cover_offered = false;
+            s_cover_lost = false;
             a2dp_cover_drop();
         }
         ESP_LOGI(TAG, "connection %d %02X:%02X:%02X:%02X:%02X:%02X", param->conn_stat.state,
@@ -717,6 +761,7 @@ static void a2dp_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_
             (void)esp_avrc_ct_send_metadata_cmd(a2dp_next_transaction(), ESP_AVRC_MD_ATTR_COVER_ART);
         } else {
             s_cover_fetching = false;
+            s_cover_lost = s_connected && s_cover_offered;
         }
         break;
     case ESP_AVRC_CT_COVER_ART_DATA_EVT:
