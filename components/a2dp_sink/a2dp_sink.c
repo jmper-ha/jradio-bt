@@ -340,12 +340,41 @@ static void a2dp_notification(uint8_t event_id, const esp_avrc_rn_param_t *param
 /* FNV-1a over the bytes, in a2dp_cover_hash(): the host caches decoded
  * covers by this, so a podcast whose every chapter carries the same picture
  * is decoded once. */
+/* The pieces are read and written a word at a time, since a piece may be
+ * IRAM, which takes nothing narrower - see a2dp_piece_alloc(). Byte by byte,
+ * a 48 KB cover costs a few milliseconds. */
+static uint8_t a2dp_piece_get(const uint8_t *piece, uint32_t at)
+{
+    const uint32_t word = ((const volatile uint32_t *)piece)[at / 4U];
+    return (uint8_t)(word >> ((at % 4U) * 8U));
+}
+
+static void a2dp_piece_put(uint8_t *piece, uint32_t at, uint8_t value)
+{
+    volatile uint32_t *word = &((volatile uint32_t *)piece)[at / 4U];
+    const uint32_t shift = (at % 4U) * 8U;
+    *word = (*word & ~(0xFFU << shift)) | ((uint32_t)value << shift);
+}
+
+/* IRAM first. ESP32's internal memory has some 30 KB that can be accessed
+ * only as words, so malloc never hands it out and the Bluetooth stack never
+ * touches it - while the byte-wide heap the stack lives in was down to 31 KB
+ * free in 14 KB pieces after an evening of reconnects, and a 23 KB cover
+ * found no room past 16 KB (bench, 2026-11-20). */
+static uint8_t *a2dp_piece_alloc(void)
+{
+    uint8_t *piece = heap_caps_malloc(A2DP_COVER_STEP, MALLOC_CAP_EXEC | MALLOC_CAP_32BIT);
+    return piece != NULL ? piece : malloc(A2DP_COVER_STEP);
+}
+
 static jbt_image_t a2dp_cover_kind(void)
 {
     const uint8_t *data = s_cover[0];
     if (data == NULL) return JBT_IMAGE_JPEG;
-    if (s_cover_size >= 8U && data[0] == 0x89U && data[1] == 'P') return JBT_IMAGE_PNG;
-    if (s_cover_size >= 2U && data[0] == 'B' && data[1] == 'M') return JBT_IMAGE_BMP;
+    const uint8_t first = a2dp_piece_get(data, 0U);
+    const uint8_t second = a2dp_piece_get(data, 1U);
+    if (s_cover_size >= 8U && first == 0x89U && second == 'P') return JBT_IMAGE_PNG;
+    if (s_cover_size >= 2U && first == 'B' && second == 'M') return JBT_IMAGE_BMP;
     return JBT_IMAGE_JPEG;
 }
 
@@ -356,7 +385,7 @@ static uint32_t a2dp_cover_hash(void)
         const uint32_t left = s_cover_size - at;
         const uint8_t *piece = s_cover[at / A2DP_COVER_STEP];
         for (uint32_t i = 0U; i < (left < A2DP_COVER_STEP ? left : A2DP_COVER_STEP); ++i) {
-            hash = (hash ^ piece[i]) * 16777619U;
+            hash = (hash ^ a2dp_piece_get(piece, i)) * 16777619U;
         }
     }
     return hash;
@@ -378,12 +407,12 @@ static bool a2dp_cover_append(const uint8_t *data, uint32_t length)
         const uint32_t index = s_cover_size / A2DP_COVER_STEP;
         const uint32_t at = s_cover_size % A2DP_COVER_STEP;
         if (s_cover[index] == NULL) {
-            s_cover[index] = malloc(A2DP_COVER_STEP);
+            s_cover[index] = a2dp_piece_alloc();
             if (s_cover[index] == NULL) return false;
         }
         const uint32_t room = A2DP_COVER_STEP - at;
         const uint32_t n = length < room ? length : room;
-        memcpy(&s_cover[index][at], data, n);
+        for (uint32_t i = 0U; i < n; ++i) a2dp_piece_put(s_cover[index], at + i, data[i]);
         s_cover_size += n;
         data += n;
         length -= n;
@@ -493,9 +522,10 @@ static void a2dp_cover_data(const uint8_t *data, uint16_t length, bool final, bo
             memset(s_cover_handle, 0, sizeof(s_cover_handle));
         } else {
             // The heap with it, to see what a cover costs the stack.
-            ESP_LOGI(TAG, "cover %u bytes, hash %08x; free %u, largest %u", (unsigned)size,
+            ESP_LOGI(TAG, "cover %u bytes, hash %08x; free %u, largest %u, iram %u", (unsigned)size,
                      (unsigned)hash, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_EXEC));
         }
         if (s_listener.cover != NULL) s_listener.cover(failed ? 0U : size, kind, failed ? 0U : hash);
         /* What came while this one was fetched is the newer word. */
@@ -536,7 +566,10 @@ size_t a2dp_sink_cover_read(uint32_t offset, uint8_t *out, size_t max, uint32_t 
             const uint32_t at = offset + (uint32_t)done;
             const uint32_t in_piece = A2DP_COVER_STEP - at % A2DP_COVER_STEP;
             const size_t take = n - done < in_piece ? n - done : in_piece;
-            memcpy(&out[done], &s_cover[at / A2DP_COVER_STEP][at % A2DP_COVER_STEP], take);
+            const uint8_t *piece = s_cover[at / A2DP_COVER_STEP];
+            for (size_t i = 0U; i < take; ++i) {
+                out[done + i] = a2dp_piece_get(piece, at % A2DP_COVER_STEP + (uint32_t)i);
+            }
             done += take;
         }
         if (offset + n == s_cover_size) {
