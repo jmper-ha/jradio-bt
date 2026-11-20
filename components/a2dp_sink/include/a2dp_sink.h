@@ -35,8 +35,8 @@ typedef struct {
     /* The phone moved its slider. */
     void (*volume)(uint8_t volume);
     /* A cover has arrived (size > 0) or the track has none (size 0). The
-     * bytes stay with the sink until the next cover; a2dp_sink_cover_read()
-     * hands them out in pieces. */
+     * bytes stay with the sink until the host has read them all;
+     * a2dp_sink_cover_read() hands them out in pieces. */
     void (*cover)(uint32_t size, jbt_image_t kind, uint32_t hash);
     /* Bluedroid confirmed the profile is up (true) or down (false). */
     void (*profile)(bool up);
@@ -46,6 +46,11 @@ typedef struct {
  * returns how many, 0 past the end or with no cover. `hash` names the cover
  * the bytes belong to, so a reader can tell it changed under them. */
 size_t a2dp_sink_cover_read(uint32_t offset, uint8_t *out, size_t max, uint32_t *hash);
+
+/* The host has just come up and knows nothing: the track and the cover of
+ * what is playing are told again, the cover fetched from the phone afresh
+ * if the host had already taken it. */
+void a2dp_sink_retell(void);
 
 /* Registers the profiles with a running stack. May be called again after
  * a2dp_sink_stop(): Bluedroid runs one A2DP role at a time, and the source

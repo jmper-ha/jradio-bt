@@ -455,6 +455,10 @@ static void a2dp_cover_handle(const uint8_t *handle, int length)
     memcpy(s_cover_handle, handle, A2DP_COVER_HANDLE_LEN);
     if (esp_avrc_ct_cover_art_get_linked_thumbnail(s_cover_handle) == ESP_OK) {
         s_cover_fetching = true;
+        // What the fetch starts with: the stack needs room for its packets.
+        ESP_LOGI(TAG, "fetching the cover; free %u, largest %u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     }
 }
 
@@ -546,6 +550,21 @@ size_t a2dp_sink_cover_read(uint32_t offset, uint8_t *out, size_t max, uint32_t 
     return n;
 }
 
+void a2dp_sink_retell(void)
+{
+    if (s_cover_lock == NULL || !s_connected) return;
+    /* Handed over, the cover went with the host that restarted (an update
+     * over the air, a reflash): without its hash the held handle reads as a
+     * new picture, and is fetched and announced. */
+    xSemaphoreTake(s_cover_lock, portMAX_DELAY);
+    if (s_cover_released) {
+        s_cover_released = false;
+        s_cover_hash = 0U;
+    }
+    xSemaphoreGive(s_cover_lock);
+    a2dp_request_metadata();
+}
+
 static void a2dp_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 {
     switch (event) {
@@ -630,12 +649,16 @@ static void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
         a2dp_note_playing(started);
         if (s_listener.play != NULL) s_listener.play(started ? JBT_PLAY_PLAYING : JBT_PLAY_PAUSED);
         if (s_connected) (void)esp_avrc_ct_send_get_play_status_cmd(a2dp_next_transaction());
-        /* The handle of what is playing, as when the channel opens: the
-         * failed fetch forgot it, so it is fetched afresh. */
-        if (started && s_cover_short && s_cover_channel && !s_cover_fetching) {
+        /* What is playing, asked afresh whenever sound starts. A phone that
+         * the module pressed play on after a connect played another track
+         * than the one it had described, and told no track change: its title
+         * and picture stayed on the screen until the listener skipped
+         * (2026-11-20). The same track keeps its handle, and a handle held is
+         * not fetched again; a cover dropped for want of memory is fetched
+         * now, when the stack has settled. */
+        if (started && s_connected) {
             s_cover_short = false;
-            ESP_LOGI(TAG, "asking for the cover again, now that the stream has started");
-            (void)esp_avrc_ct_send_metadata_cmd(a2dp_next_transaction(), ESP_AVRC_MD_ATTR_COVER_ART);
+            a2dp_request_metadata();
         }
         break;
     }

@@ -412,7 +412,13 @@ static void on_frame(const jbt_frame_t *frame, void *context)
     (void)context;
     switch ((jbt_msg_t)frame->type) {
     case JBT_MSG_PING: send_pong(); return;
-    case JBT_MSG_GET_STATUS: send_status(); return;
+    case JBT_MSG_GET_STATUS:
+        /* Asked by a host that has just come up: it hears what is playing
+         * too, or a restarted radio showed no track and no cover until the
+         * next one (2026-11-20). */
+        send_status();
+        a2dp_sink_retell();
+        return;
     case JBT_MSG_SET_MODE: handle_set_mode(frame); return;
     case JBT_MSG_SET_NAME: handle_set_name(frame); return;
     case JBT_MSG_PAIRING: handle_pairing(frame); return;
